@@ -1,26 +1,82 @@
 # saas-security-audit
 
-AI-agent security and **correctness** audit for a SaaS, with coverage proven by arithmetic and adversarial verification of every serious finding. Runs on [Claude Code](https://claude.com/claude-code) and outputs a self-contained HTML dashboard with one simple gate: **ready to scale or not?**
+**The security audit your checklist can't run.**
 
-Read-only: it finds, proves and proposes. It never fixes anything on its own.
+An AI-agent audit for SaaS codebases that covers the usual attack surface (RLS, policies, privilege, webhooks, injection, storage, LLM, privacy) **and a second axis nobody scans for**: the places where your app quietly does the wrong thing to users acting in good faith.
 
-> The method, the prompts and the dashboard are written in **Portuguese**, because they were built for a Brazilian studio and the findings go straight to a human reader. The code, the profile format and this page are the part you need to operate it. Translation PRs are welcome.
+Runs on [Claude Code](https://claude.com/claude-code). Outputs one self-contained HTML report with a single gate: **ready to scale, or not?**
+
+Read-only. It finds, proves and proposes. It never touches your code.
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](#requirements)
+[![Self-test](https://img.shields.io/badge/self--test-19%20detectors-brightgreen.svg)](#quick-start)
+
+```
+$ python verificar.py          # real output, Portuguese; glosses added here
+
+[3/4] detectores mecanicos     # mechanical detectors
+  ok   rls-ausente = 1                 # a table with no RLS at all
+  ok   definer-sem-search-path = 1     # ...and the one WITH search_path is not flagged
+  ok   policy-tautologica = 1          # only the real one; neighbours must not be accused
+  ok   privilegio-no-frontend = 1      # service-role client imported into a .tsx component
+  ...
+  ok   recorte de policy nao invade a vizinha
+  ok   cobertura provada em 3 universos       # coverage proven across 3 universes
+
+[4/4] painel.py                # report
+  ok   exatamente um </script>
+  ok   segredo do exemplo nao aparece inteiro no painel
+  ok   zero requisicao externa (fonte, script, css)
+  ok   gate contou 11 bloqueadores (4 criticos + 7 altos)
+
+APROVADO: scanner, detectores, cobertura e painel funcionam nesta maquina.
+```
 
 ---
 
-## The problem it attacks
+## Why this exists
 
-Every application security checklist asks the same question: **what can an attacker do that they shouldn't?** That is the right question, and this tool covers it fully (RLS, policies, privilege, webhooks, injection, storage, LLM, privacy).
+Every AppSec checklist asks: **what can an attacker do that they shouldn't?** Right question. This tool answers it in full.
 
-But a small SaaS has a second axis, a more likely one, that no checklist covers: **does the system do the right thing for someone acting in good faith?** Nobody attacks, and the system breaks on its own.
+But in a small SaaS, the more likely damage comes from somewhere else entirely, and no scanner on the market looks there: **does the system do the right thing for someone acting in good faith?** Nobody attacks. The code is "correct". The security checklist goes green. And the product still breaks:
 
-- It denies access to someone entitled to it, because the guard was written assuming "entitled" = "has a paid subscription".
-- It offers a payment button to someone you invited for free.
-- It reads a protected table with the wrong client, RLS returns **zero rows with no error**, and zero rows becomes "everything is fine".
-- It writes payments through three different paths and one of them forgets the provider's payment id, so refunds can't find the sale.
-- It promises a date an external partner won't honor, because the code derived it from the convenient column instead of the real one.
+| What happens | Why the checklist misses it |
+|---|---|
+| A guard denies access to an entitled user, because it was written assuming "entitled" = "has a paid subscription" | The authorization control is present and working. It's just asking the wrong question |
+| Your UI offers a **payment button to someone you invited for free** | Nothing is insecure here. It's a billing path reached by the wrong person |
+| A query reads a protected table with the user's client, RLS returns **zero rows with no error**, and zero rows becomes "all clear" | RLS is enabled, the policy is correct, the row filter works. The bug is the *direction* the failure falls in |
+| Three code paths write payments and one omits the provider's payment id, so refunds can't find the sale and commission keeps being paid | Every path is authenticated and authorized |
+| The app promises a date an external partner won't honor, because the calculation derived from the convenient column | No vulnerability. Just a promise the real world won't keep |
 
-This axis doesn't require anyone to be interested in attacking you. It only requires someone to have written a condition thinking about the main case. Here it's called **dimension B (correctness)**, with four lenses of its own.
+That's **dimension B (correctness)**, with four lenses of its own. It is the part of this project that doesn't exist anywhere else.
+
+## What you get
+
+| | |
+|---|---|
+| 🔍 **Two dimensions** | A: security and abuse, 9 vulnerability families with severity and refutation criteria. B: correctness, 4 lenses (access matrix, failure direction, write-path consistency, external rule anchor) |
+| 📐 **Coverage proven by arithmetic** | A deterministic scanner partitions every table, server function and API route into explicit batches, then **asserts** sum-of-batches == universe and empty intersection. It raises rather than audit by sampling |
+| ⚖️ **Adversarial verification** | Independent skeptic agents, clean context, whose only job is to **knock down** each critical and high finding. They may refute *only* by citing the blocker at `file:line` |
+| 💸 **Money gets its own batch** | Payment tables never get delegated to a subagent, and are audited on both dimensions |
+| 🧩 **The access matrix is never sliced** | The bug lives in the crossing between a guard and an access type. Splitting it hides exactly what it exists to find |
+| 📊 **Self-contained HTML report** | Zero external requests, opens offline, editable finding status that persists, schema heat map, coverage proof, and a "ready to scale?" gate |
+| 🌐 **Optional runtime layer** | Feed it a HAR export and it reports the headers actually served, real cookie flags, CORS, caching, and responses over-fetching personal data |
+| ✅ **Ships with its own proof** | An example SaaS with one planted defect per detector, and a self-test that verifies all 19 of them plus the report's properties |
+| 🔒 **Safe by construction** | Read-only on your repo. No secret value is ever written or printed. Artifacts never land inside the audited repository |
+
+## Honest limits, up front
+
+- **Static and passive.** It does not forge webhooks, probe production, or call functions directly. That's pentesting, and it needs explicit authorization.
+- **Not a replacement** for an external pentest or a human security review.
+- **The scanner reads migrations**, so it sees what was *requested*, not what's in the database. That's what phase 1 (ground truth) is for.
+- **LLM findings can be wrong.** Hence the skeptic, the mandatory `file:line`, and a calibration gate after the very first batch.
+- **Passing the gate is not a certification.** It's an informed verdict about what was examined, shipped with the list of what wasn't.
+
+> The method, the prompts and the report are written in **Portuguese**, because they were built for a Brazilian studio and the findings go straight to a human reader. The code, the CLI and the profile format are language-neutral. Translation PRs are very welcome.
+
+---
 
 ## What makes it different from "running an audit prompt"
 
@@ -95,14 +151,6 @@ An audit produces the most sensitive document a project will ever have.
 - **No secret value** is ever written or printed: type, file and line only. The dashboard masks again before writing HTML.
 - **HAR only from a test account.** A real session HAR carries a live token and real personal data.
 - The only file the audit writes into your app is `perfil.toml`.
-
-## Limits, stated plainly
-
-- **Static and passive analysis.** It does not forge webhooks, probe production, or call functions directly. That's pentesting, and it needs explicit authorization.
-- **Not a replacement** for an external pentest or human security review.
-- **The scanner reads migrations**, so it sees what was requested, not what's in the database. That's why phase 1 exists.
-- **LLM findings can be wrong.** Hence the skeptic, the mandatory `file:line`, and the calibration gate.
-- Passing the gate **is not a certification**. It's an informed verdict about what was examined, with a list of what wasn't.
 
 ## License and credit
 

@@ -26,3 +26,6 @@ desktop.ini
 # Backup
 *.bak
 *.bak-*
+
+# Memoria interna da ALQUIM_IA.LAB: nunca sobe pro repo publico.
+_estado.md

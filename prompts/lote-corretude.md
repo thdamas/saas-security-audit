@@ -14,7 +14,7 @@ Você **não** está procurando o que um atacante consegue fazer. Você está pr
 
 Ninguém ataca. O código está lá, os controles estão certos, o checklist de segurança fecharia verde, e mesmo assim o sistema nega acesso a quem tem direito, cobra de quem foi convidado de graça, promete uma data que um terceiro não vai honrar, ou informa um número errado pra dentro de casa.
 
-Esse eixo não existe em nenhum material de segurança de mercado. Foi de onde veio todo o prejuízo real desta casa.
+Esse eixo não existe em material de segurança de mercado, e é onde mora a falha que nenhum checklist acusa.
 
 > **A pergunta que atravessa tudo:** o código está certo *pra quem escreveu*, ou está certo *pra todo mundo que vai passar por ele*?
 

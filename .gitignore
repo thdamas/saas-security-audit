@@ -1,0 +1,28 @@
+# Artefatos de auditoria NUNCA versionam: relatório de vulnerabilidade é o documento
+# mais sensível que um projeto tem, e aqui isso vale para o próprio repositório.
+saida/
+_saida-teste/
+auditorias/
+*.har
+relatorio.html
+latest.html
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Sistema
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Backup
+*.bak
+*.bak-*

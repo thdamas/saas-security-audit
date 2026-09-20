@@ -1,0 +1,78 @@
+# Perfil do app de exemplo. Cada defeito aqui foi plantado de propósito pra exercitar um
+# detector do scanner; o verificar.py confere que todos são achados.
+
+[app]
+nome = "exemplo-assinatura"
+titulo = "Exemplo · SaaS de assinatura"
+raiz = "../.."
+stack = "TanStack Start + Supabase + Stripe + Vercel (fictício)"
+padrao_servidor = "tanstack-start"
+
+[caminhos]
+migrations       = ["supabase/migrations/*.sql"]
+server_functions = ["src/lib/**/*.functions.ts"]
+rotas_api        = ["src/routes/api.*.ts"]
+middlewares      = ["src/lib/auth/middleware.server.ts"]
+frontend         = ["src/routes/**/*.tsx", "src/components/**/*.tsx"]
+config_deploy    = ["vercel.json"]
+testes           = ["src/**/*.test.ts"]
+ignorar = ["node_modules", "dist", ".vercel"]
+
+[[tipos_de_acesso]]
+id = "pagante"
+descricao = "assinante que paga a mensalidade"
+como_prova_direito = "linha em assinaturas com status ativa|inadimplente"
+paga = true
+
+[[tipos_de_acesso]]
+id = "cortesia"
+descricao = "convidado sem cobrança"
+como_prova_direito = "profiles.tipo_acesso = 'cortesia'; NÃO tem linha em assinaturas"
+paga = false
+armadilhas = ["guarda que exige assinatura viva barra este tipo", "tela de cobrança oferecida a quem não paga"]
+
+[tabelas]
+dinheiro = ["pagamentos", "assinaturas"]
+dado_pessoal = ["profiles", "convites"]
+so_staff = ["logs_admin"]
+trilha_auditoria = ["logs_admin"]
+
+[[eixos_de_estado]]
+nome = "pagamento"
+fonte = "assinaturas.status"
+valores = ["ativa", "inadimplente", "cancelada"]
+
+[[escritas_concorrentes]]
+tabela = "pagamentos"
+caminhos = ["webhook", "registrarPagamento"]
+campos_obrigatorios = ["provedor_payment_id", "pago_em"]
+
+[privilegio]
+service_role_permitido_em = ["**/*.server.ts", "**/routes/api.*.ts", "**/billing/*.functions.ts"]
+nome_do_client_privilegiado = "supabaseAdmin"
+env_da_chave = "SUPABASE_SERVICE_ROLE_KEY"
+
+[[webhooks]]
+rota = "src/routes/api.webhook.ts"
+provedor = "stripe"
+como_assina = "constructEventAsync com STRIPE_WEBHOOK_SECRET"
+tabela_idempotencia = ""
+
+[[rotas_publicas]]
+rota = "/api/descadastrar"
+por_que_publica = "link de descadastro no e-mail"
+protecao_esperada = "token com HMAC, expiração e uso único"
+
+[ia]
+usa_llm = false
+
+[plataforma]
+banco = "supabase"
+plano_banco = "free"
+plano_deploy = "hobby"
+migration_aplicada_a_mao = true
+
+[git]
+push_direto_na_main = true
+tem_gate_de_ci = false
+tem_branch_protection = false

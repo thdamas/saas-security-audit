@@ -1,0 +1,177 @@
+# perfil.toml — o mapa do app pra auditoria
+#
+# COPIE este arquivo pra `.claude/auditoria/perfil.toml` DENTRO do repositório do app
+# auditado. O motor da auditoria é genérico; o mapa é do app. Ele versiona junto com o
+# schema que descreve: migration nova que cria tabela de dinheiro deveria mexer aqui no
+# mesmo commit.
+#
+# Sem perfil, o scanner roda em modo descoberta (`--descobrir`) e cospe um rascunho pra
+# você revisar. O perfil é o PRIMEIRO checkpoint humano da auditoria: se o mapa está
+# errado, todo o resto audita o lugar errado com confiança.
+#
+# Há um exemplo completo e funcional em `exemplo/.claude/auditoria/perfil.toml`.
+
+[app]
+nome = "nome-curto-sem-espaco"        # vira o nome da pasta de saída: <saida>/<nome>/
+titulo = "Nome bonito pro relatório"
+raiz = "../.."                        # relativo a ESTE arquivo, ou caminho absoluto
+stack = "descreva em uma linha: framework, banco, auth, deploy, gateway de pagamento"
+
+# Como o código do servidor é escrito. Muda o que o scanner procura.
+#   "tanstack-start"  -> server functions via createServerFn
+#   "next-app"        -> server actions ('use server') e route handlers
+#   "supabase-edge"   -> Edge Functions em supabase/functions/
+#   "api-propria"     -> express / fastify / hono
+padrao_servidor = "tanstack-start"
+
+[caminhos]
+# Globs relativos a [app].raiz. Liste TODOS os lugares: caminho esquecido = área não
+# auditada, e a prova de cobertura passa verde sem cobrir aquilo.
+#
+# Receitas por padrão de servidor:
+#   tanstack-start : server_functions = ["src/**/*.functions.ts"]
+#                    rotas_api        = ["src/routes/api.*.ts"]
+#   next-app       : server_functions = ["src/**/actions.ts", "src/**/*.server.ts"]
+#                    rotas_api        = ["src/app/api/**/route.ts"]
+#   supabase-edge  : server_functions = ["supabase/functions/**/index.ts"]
+#                    rotas_api        = []
+#   api-propria    : server_functions = ["src/services/**/*.ts"]
+#                    rotas_api        = ["src/routes/**/*.ts"]
+migrations       = ["supabase/migrations/*.sql"]
+server_functions = ["src/**/*.functions.ts"]
+rotas_api        = ["src/routes/api.*.ts"]
+middlewares      = ["src/lib/auth/*.server.ts"]
+frontend         = ["src/routes/**/*.tsx", "src/components/**/*.tsx"]
+config_deploy    = ["vercel.json", "netlify.toml", "wrangler.toml"]
+testes           = ["src/**/*.test.ts"]
+# Arquivos e pastas que o scanner NUNCA lê (ruído ou gerado).
+ignorar = ["node_modules", "dist", ".next", ".vercel", "routeTree.gen.ts", "__pycache__"]
+
+# ---------------------------------------------------------------------------
+# TIPOS DE ACESSO — o insumo da lente B1 (matriz de acesso).
+# Liste TODA forma de a pessoa ter direito, inclusive as que não pagam.
+# Isto é o coração da dimensão de corretude: os bugs moram no tipo de acesso
+# que ninguém lembrou de considerar quando a guarda foi escrita.
+# ---------------------------------------------------------------------------
+[[tipos_de_acesso]]
+id = "pagante"
+descricao = "assinante que paga a mensalidade"
+como_prova_direito = "linha viva em assinaturas com status ativa|inadimplente"
+paga = true
+
+[[tipos_de_acesso]]
+id = "cortesia"
+descricao = "convidado que tem acesso sem pagar"
+como_prova_direito = "coluna tipo_acesso no perfil; NÃO tem linha em assinaturas"
+paga = false
+# Sinalize aqui o que costuma quebrar pra esse tipo. Vira hipótese de auditoria.
+armadilhas = [
+  "guarda que exige assinatura viva barra este tipo",
+  "tela de cobrança oferecida a quem não paga",
+]
+
+# ---------------------------------------------------------------------------
+# TABELAS — a classificação que define severidade.
+# ---------------------------------------------------------------------------
+[tabelas]
+# Dinheiro: erro aqui custa direto. Vira lote próprio, auditado nas 2 dimensões.
+dinheiro = ["pagamentos", "assinaturas"]
+# Dado pessoal: vazamento aqui é irreversível.
+dado_pessoal = ["profiles", "convites"]
+# Tabelas que SÓ staff deveria ler. Se um usuário comum lê, é crítico.
+so_staff = []
+# Tabelas cujo acesso é escopado por tenant, parceiro ou organização.
+escopo_por = { parceiros = "parceiro_id" }
+# Trilha de auditoria: nunca deve ser editável pelo próprio autor do evento.
+trilha_auditoria = []
+
+# ---------------------------------------------------------------------------
+# EIXOS DE ESTADO — a raiz de uma classe inteira de bug.
+# Declare os eixos INDEPENDENTES de estado. O auditor cobra que o código não
+# colapse dois eixos num rótulo só (ex: "está pagando" != "o parceiro externo já ativou").
+# ---------------------------------------------------------------------------
+[[eixos_de_estado]]
+nome = "pagamento"
+fonte = "assinaturas.status"
+valores = ["ativa", "inadimplente", "cancelada"]
+
+# [[eixos_de_estado]]
+# nome = "operacional"
+# fonte = "profiles.status_operacional"
+# valores = ["aguardando_ativacao", "ativo", "suspenso"]
+
+# ---------------------------------------------------------------------------
+# ÂNCORAS DE REGRA EXTERNA — o insumo da lente B4.
+# Toda regra de data, valor ou prazo que o mundo real (parceiro, banco, contrato,
+# órgão) honra, e a coluna de onde ela DEVE sair. O auditor cobra que o código
+# use esta fonte e não um cálculo próprio conveniente.
+# ---------------------------------------------------------------------------
+# [[ancoras_externas]]
+# regra = "vigência de 12 meses do serviço"
+# fonte_da_verdade = "documentos.vigencia_fim (preenchido quando o parceiro emite)"
+# quem_honra = "o parceiro externo"
+# nunca_derivar_de = ["assinaturas.data_inicio", "profiles.data_ativacao"]
+
+# ---------------------------------------------------------------------------
+# CAMINHOS QUE ESCREVEM O MESMO DADO — o insumo da lente B3.
+# Se N caminhos gravam a mesma tabela, todos têm que gravar os mesmos campos.
+# ---------------------------------------------------------------------------
+# [[escritas_concorrentes]]
+# tabela = "pagamentos"
+# caminhos = ["webhook", "cadastro", "reassinatura"]
+# campos_obrigatorios = ["provedor_payment_id", "pago_em"]
+
+[privilegio]
+# Onde é LEGÍTIMO o client privilegiado (service_role) morar. Uso fora daqui é achado.
+service_role_permitido_em = ["**/*.server.ts", "**/routes/api.*.ts"]
+nome_do_client_privilegiado = "supabaseAdmin"
+# Variável de ambiente que carrega a chave (o scanner confere que não vaza pro bundle).
+env_da_chave = "SUPABASE_SERVICE_ROLE_KEY"
+
+[[webhooks]]
+rota = "src/routes/api.webhook.ts"
+provedor = "stripe"
+como_assina = "constructEventAsync com STRIPE_WEBHOOK_SECRET"
+tabela_idempotencia = "stripe_events"
+
+[[rotas_publicas]]
+# Toda rota alcançável sem login. Cada uma é superfície de ataque e de custo.
+rota = "/assinar"
+por_que_publica = "checkout público"
+protecao_esperada = "rate limit + captcha (enumeração de documento)"
+
+[storage]
+buckets_privados = []
+buckets_publicos = []
+ttl_url_assinada_segundos = 60
+
+[ia]
+# Se o app chama LLM. Superfície de prompt injection e de custo (denial-of-wallet).
+usa_llm = false
+# arquivos_de_prompt = ["**/conhecimento-*.ts"]
+# handler = "src/lib/suporte/suporte.functions.ts"
+# dado_do_usuario_entra_no_prompt = true
+# a_ia_decide_algo_sensivel = false   # se true, é achado alto por desenho
+
+[plataforma]
+# Insumo de resiliência. Plano gratuito costuma não ter backup automático.
+banco = "supabase"
+projeto_id = ""
+plano_banco = "desconhecido"          # free | pro | team | desconhecido
+plano_deploy = "desconhecido"         # hobby | pro
+migration_aplicada_a_mao = false      # true aumenta o peso de "sem backup"
+
+[git]
+push_direto_na_main = false
+tem_gate_de_ci = false
+tem_branch_protection = false
+
+# ---------------------------------------------------------------------------
+# BASELINE — achados que a pessoa dona do app JÁ julgou. A rodada seguinte não reabre.
+# Só um humano escreve aqui. O agente nunca aceita um achado por conta própria.
+# ---------------------------------------------------------------------------
+# [[aceitos]]
+# id = "SEC-014"
+# data = "2026-01-15"
+# razao = "policy ampla de staff é deliberada: o admin lê a base inteira por desenho"
+# quem_decidiu = "nome de quem decidiu"

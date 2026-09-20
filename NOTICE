@@ -1,0 +1,11 @@
+saas-security-audit
+Copyright 2026 ALQUIM_IA.LAB (Thiago Menezes Damasceno)
+https://alquimialab.com.br
+
+Este produto inclui software desenvolvido pela ALQUIM_IA.LAB.
+
+Licenciado sob a Apache License, Version 2.0. Uma cópia da licença está em LICENSE,
+e o texto oficial em http://www.apache.org/licenses/LICENSE-2.0
+
+A dimensão de corretude de negócio (dimensão B: matriz de acesso, direção da falha,
+consistência entre caminhos e âncora de regra externa) é autoria da ALQUIM_IA.LAB.

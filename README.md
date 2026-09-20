@@ -156,6 +156,6 @@ An audit produces the most sensitive document a project will ever have.
 
 ## License and credit
 
-Apache-2.0. Built by **[ALQUIM_IA.LAB](https://alquimialab.com.br)** (Thiago Menezes Damasceno).
+Apache-2.0. Built by **[ALQUIM_IA.LAB](https://alquimialab.com.br)** (Thiago Menezes).
 
 PRs welcome: new detectors, recipes for other stacks, or a correctness lens you learned the hard way.

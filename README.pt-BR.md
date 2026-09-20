@@ -132,6 +132,6 @@ exemplo/            SaaS fictício com um defeito plantado por detector
 
 ## Licença e crédito
 
-Apache-2.0. Criado por **[ALQUIM_IA.LAB](https://alquimialab.com.br)** (Thiago Menezes Damasceno).
+Apache-2.0. Criado por **[ALQUIM_IA.LAB](https://alquimialab.com.br)** (Thiago Menezes).
 
 Se usar em cliente ou adaptar pra outra stack, o crédito é bem-vindo e a contribuição de volta é mais ainda: PR com detector novo, receita de outra stack ou lente de corretude que você descobriu na marra.

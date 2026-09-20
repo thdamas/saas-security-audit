@@ -91,7 +91,7 @@ That's **dimension B (correctness)**, with four lenses of its own. It is the par
 ## Requirements
 
 - **Python 3.11+** (uses `tomllib`). No external dependencies: standard library only.
-- **Claude Code**, or any agent runner with subagents, for the judgment phases. The scanner and the dashboard run standalone, with no AI at all.
+- **Claude Code** (the skill becomes the `/auditor` command) or **Codex** (read `AGENTS.md`, same method in its own format). Any runner with subagents works. The scanner and the dashboard run standalone, with no AI at all.
 - Optional: the **Supabase MCP** to pull real database state (advisors, schema), and a **HAR** exported from the running app.
 
 ## Stack calibration

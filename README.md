@@ -35,7 +35,7 @@ Esse eixo não depende de existir alguém interessado em te atacar. Depende só 
 ## Requisitos
 
 - **Python 3.11+** (usa `tomllib`). Nenhuma dependência externa: só biblioteca padrão.
-- **Claude Code**, ou outro agente com subagentes, para as fases de julgamento. O scanner e o painel rodam sozinhos, sem IA nenhuma.
+- **Claude Code** (a skill vira o comando `/auditor`) ou **Codex** (leia `AGENTS.md`, que traz o mesmo método no formato dele). Qualquer runner com subagentes serve. O scanner e o painel rodam sozinhos, sem IA nenhuma.
 - Opcional: o **MCP do Supabase** para puxar o estado real do banco (advisors, schema), e um **HAR** exportado do app rodando.
 
 ## Calibragem de stack

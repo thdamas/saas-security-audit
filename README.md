@@ -158,4 +158,6 @@ An audit produces the most sensitive document a project will ever have.
 
 Apache-2.0. Built by **[ALQUIM_IA.LAB](https://alquimialab.com.br)** (Thiago Menezes).
 
+**Prefer it explained visually?** There is a walkthrough of the whole method, both dimensions, the nine vulnerability families and the four correctness lenses, at **[saas-security.alquimialab.com.br](https://saas-security.alquimialab.com.br)**. It opens in the browser, no install required.
+
 PRs welcome: new detectors, recipes for other stacks, or a correctness lens you learned the hard way.

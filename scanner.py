@@ -181,26 +181,35 @@ def ler(p: Path) -> str:
 # INVENTÁRIO DO BANCO (parseia as migrations)
 # ---------------------------------------------------------------------------
 
+# Esquema opcional, com ou sem aspas: `x`, `public.x`, `"public"."x"`. É o formato que o
+# `supabase db diff` e o pg_dump escrevem, e sem ele a tabela inteira some do inventário.
+SQ = r"(?:\"?(?:public|storage|auth)\"?\s*\.\s*)?\"?"
+NOME_POLICY = r"(?:\"([^\"]+)\"|'([^']+)'|([^\s\"';]+))"
+
 RE_CREATE_TABLE = re.compile(
-    r"create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?[\"']?([a-z0-9_]+)", re.I)
+    r"create\s+table\s+(?:if\s+not\s+exists\s+)?" + SQ + r"([a-z0-9_]+)", re.I)
 RE_RLS_ON = re.compile(
-    r"alter\s+table\s+(?:public\.)?[\"']?([a-z0-9_]+)[\"']?\s+enable\s+row\s+level\s+security", re.I)
-RE_POLICY = re.compile(
-    r"create\s+policy\s+[\"']?([^\"'\s]+)[\"']?\s+on\s+(?:public\.|storage\.)?[\"']?([a-z0-9_]+)",
+    r"alter\s+table\s+(?:only\s+)?(?:if\s+exists\s+)?" + SQ + r"([a-z0-9_]+)\"?\s+enable\s+row\s+level\s+security",
     re.I)
+RE_POLICY = re.compile(r"create\s+policy\s+" + NOME_POLICY + r"\s+on\s+" + SQ + r"([a-z0-9_]+)", re.I)
 RE_DROP_POLICY = re.compile(
-    r"drop\s+policy\s+(?:if\s+exists\s+)?[\"']?([^\"'\s;]+)[\"']?\s+on\s+(?:public\.|storage\.)?[\"']?([a-z0-9_]+)",
-    re.I)
+    r"drop\s+policy\s+(?:if\s+exists\s+)?" + NOME_POLICY + r"\s+on\s+" + SQ + r"([a-z0-9_]+)", re.I)
 RE_FUNC = re.compile(
-    r"create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?([a-z0-9_]+)\s*\(", re.I)
+    r"create\s+(?:or\s+replace\s+)?function\s+" + SQ + r"([a-z0-9_]+)\"?\s*\(", re.I)
 RE_VIEW = re.compile(
-    r"create\s+(?:or\s+replace\s+)?view\s+(?:public\.)?([a-z0-9_]+)", re.I)
-RE_TRIGGER = re.compile(r"create\s+trigger\s+([a-z0-9_]+)", re.I)
+    r"create\s+(?:or\s+replace\s+)?view\s+" + SQ + r"([a-z0-9_]+)", re.I)
+RE_TRIGGER = re.compile(
+    r"create\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+\"?([a-z0-9_]+)", re.I)
 RE_ENUM = re.compile(
-    r"create\s+type\s+(?:public\.)?([a-z0-9_]+)\s+as\s+enum\s*\(([^)]*)\)", re.I | re.S)
+    r"create\s+type\s+" + SQ + r"([a-z0-9_]+)\"?\s+as\s+enum\s*\(([^)]*)\)", re.I | re.S)
 RE_GRANT = re.compile(
-    r"grant\s+([a-z, ]+)\s+on\s+(?:table\s+)?(?:public\.)?[\"']?([a-z0-9_]+)[\"']?\s+to\s+([a-z_, ]+)",
+    r"grant\s+([a-z, ]+)\s+on\s+(?:table\s+)?" + SQ + r"([a-z0-9_]+)\"?\s+to\s+([a-z_, ]+)",
     re.I)
+
+
+def _nome_e_tabela(m) -> tuple[str, str]:
+    """Nome e tabela de um match de RE_POLICY ou RE_DROP_POLICY."""
+    return (m.group(1) or m.group(2) or m.group(3)), m.group(4).lower()
 RE_BUCKET = re.compile(r"storage\.buckets", re.I)
 RE_DOLLAR_TAG = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
 RE_PROXIMO_CREATE = re.compile(r"\bcreate\s+(or\s+replace\s+)?(function|table|view|policy|trigger|type|index)\b", re.I)
@@ -281,9 +290,10 @@ def inventario_banco(perfil: dict) -> dict:
             rls_on.add(m.group(1).lower())
         for m in RE_POLICY.finditer(texto):
             trecho = _statement(texto, m.start())
+            nome_pol, tabela_pol = _nome_e_tabela(m)
             policies.append({
-                "nome": m.group(1),
-                "tabela": m.group(2).lower(),
+                "nome": nome_pol,
+                "tabela": tabela_pol,
                 "arquivo": nome_arq,
                 "linha": linhas_por_pos(m.start()),
                 "comando": _comando_da_policy(trecho),
@@ -294,7 +304,8 @@ def inventario_banco(perfil: dict) -> dict:
                 "tautologia": bool(re.search(r"(using|with\s+check)\s*\(\s*true\s*\)", trecho, re.I)),
             })
         for m in RE_DROP_POLICY.finditer(texto):
-            drops.append({"nome": m.group(1), "tabela": m.group(2).lower(), "arquivo": nome_arq})
+            nome_pol, tabela_pol = _nome_e_tabela(m)
+            drops.append({"nome": nome_pol, "tabela": tabela_pol, "arquivo": nome_arq})
         for m in RE_FUNC.finditer(texto):
             nome = m.group(1).lower()
             corpo = _corpo_da_funcao(texto, m.start())
@@ -766,7 +777,458 @@ def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
                 detalhe="Resposta de LLM nunca deve ser fonte de verdade pra cobrança, permissão "
                         "ou estado de cobertura.")
 
+    try:
+        detectores_de_escopo(perfil, banco, add)
+    except Exception as e:
+        eprint(f"[scanner] detectores_de_escopo falhou: {e!r}")
+
     return {"achados": achados, "front_hits": front_hits}
+
+
+# ---------------------------------------------------------------------------
+# DETECTORES DE ESCOPO E CORRETUDE
+# Nasceram da leitura linha a linha de um SaaS real de gestão de clientes (Órbita, MIT,
+# github.com/felipefernandees/orbita), em 23/09/2026. Cada um é um buraco que existia lá.
+# ---------------------------------------------------------------------------
+
+RE_NOME_DE_PAPEL = re.compile(r"(^|_)(role|roles|papel|papeis)(_|$)", re.I)
+RE_PREFIXO_DE_PAPEL = re.compile(r"(^|_)(is|eh|has|tem)_", re.I)
+RE_PALAVRA_PAPEL = re.compile(r"\b(role|roles|papel|papeis)\b", re.I)
+RE_LITERAL_SQL = re.compile(r"'(?:[^']|'')*'")
+RE_REF_TABELA = re.compile(r"\b(?:from|join)\s+" + r"(?:\"?(?:public|storage|auth)\"?\s*\.\s*)?\"?" + r"([a-z0-9_]+)", re.I)
+RE_SUFIXO_NAO_SENSIVEL = re.compile(r"_(count|qtd|total|type|tipo|id|at|em|expires|expira|hash_alg)$", re.I)
+TOKENS_NAO_HISTORICO = {"avisos", "aviso", "notices", "notifications", "notificacoes", "alertas", "alerts", "push"}
+RE_FLAG_DESATIVACAO = re.compile(
+    r"^(active|is_active|ativo|desativado|disabled|deleted_at|excluido_em|archived_at)$", re.I)
+RE_COL_SENSIVEL = re.compile(
+    r"(^|_)(cpf|cnpj|rg|salario|salary|hourly|valor_hora|custo|senha|password|secret|segredo|"
+    r"token|nascimento|telefone|phone|celular|whatsapp|email|endereco|address)(_|$)", re.I)
+RE_TABELA_ABRE = re.compile(
+    r"create\s+table\s+(?:if\s+not\s+exists\s+)?" + SQ + r"([a-z0-9_]+)\"?\s*\(", re.I)
+RE_ALTER_TABELA = re.compile(
+    r"alter\s+table\s+(?:only\s+)?(?:if\s+exists\s+)?" + SQ + r"([a-z0-9_]+)\"?\s+add\s+", re.I)
+RE_FK_DE_TABELA = re.compile(
+    r"foreign\s+key\s*\(\s*\"?([a-z0-9_]+)\"?\s*\)\s*references\s+" + SQ + r"([a-z0-9_]+)", re.I)
+RE_FK_DE_COLUNA = re.compile(r"\breferences\s+" + SQ + r"([a-z0-9_]+)", re.I)
+RE_ON_DELETE = re.compile(r"on\s+delete\s+(cascade|set\s+null|set\s+default|restrict|no\s+action)", re.I)
+RE_ADD_COLUNA = re.compile(r"add\s+column\s+(?:if\s+not\s+exists\s+)?\"?([a-z0-9_]+)", re.I)
+RE_GRANT_OU_REVOKE = re.compile(r"\b(grant|revoke)\s", re.I)
+RE_ALVO_FUNCAO = re.compile(r"\bon\s+function\s+" + SQ + r"([a-z0-9_]+)", re.I)
+RE_ADD_VALUE = re.compile(r"alter\s+type\s+" + SQ + r"([a-z0-9_]+)\"?\s+add\s+value", re.I)
+RE_COMENTARIO_SQL = re.compile(r"--[^\n]*")
+RE_UID_EMBRULHADO = re.compile(r"\(\s*select\s+auth\.uid\(\)\s*(?:as\s+\w+\s*)?\)", re.I)
+RE_CONVITE = re.compile(r"invit|convite", re.I)
+TOKENS_HISTORICO = {
+    "horas", "hours", "apontamentos", "pagamentos", "payments", "faturas", "invoices", "creditos",
+    "credits", "lancamentos", "ledger", "transacoes", "transactions", "extrato", "extratos",
+    "consumo", "entries",
+}
+PARES_INTERVALO = [
+    ("started_at", "ended_at"), ("start_at", "end_at"), ("starts_at", "ends_at"),
+    ("inicio", "fim"), ("data_inicio", "data_fim"), ("inicia_em", "termina_em"),
+    ("valid_from", "valid_to"), ("vigencia_inicio", "vigencia_fim"),
+]
+PALAVRAS_DE_RESTRICAO = {"constraint", "primary", "unique", "check", "foreign", "exclude", "like"}
+PAPEIS_DO_BANCO = {"anon", "authenticated", "public", "service_role", "postgres", "authenticator"}
+
+
+def _entre_parenteses(texto: str, abre: int) -> str:
+    """Conteúdo entre o `(` na posição `abre` e o `)` que fecha ele."""
+    nivel = 0
+    for i in range(abre, min(len(texto), abre + 20000)):
+        if texto[i] == "(":
+            nivel += 1
+        elif texto[i] == ")":
+            nivel -= 1
+            if nivel == 0:
+                return texto[abre + 1:i]
+    return texto[abre + 1:abre + 20000]
+
+
+def _partes_de_topo(corpo: str) -> list[str]:
+    """Divide o corpo de um CREATE TABLE nas vírgulas de nível zero."""
+    partes, nivel, atual = [], 0, []
+    for ch in corpo:
+        if ch == "(":
+            nivel += 1
+        elif ch == ")":
+            nivel -= 1
+        if ch == "," and nivel == 0:
+            partes.append("".join(atual).strip())
+            atual = []
+        else:
+            atual.append(ch)
+    if "".join(atual).strip():
+        partes.append("".join(atual).strip())
+    return partes
+
+
+def _sem_comentario(texto: str) -> str:
+    """Troca comentário de linha por espaços do mesmo tamanho: a posição e a linha não mudam."""
+    return RE_COMENTARIO_SQL.sub(lambda m: " " * len(m.group(0)), texto)
+
+
+def _sem_casca(x: str) -> str:
+    x = x.strip()
+    while x.startswith("(") and _entre_parenteses(x, 0) == x[1:-1]:
+        x = x[1:-1].strip()
+    return x
+
+
+def _disjuncoes(expr: str) -> list[str]:
+    """Divide uma expressão nos OR de nível zero."""
+    expr = _sem_casca(expr)
+    partes, nivel, inicio, i = [], 0, 0, 0
+    baixo = expr.lower()
+    while i < len(expr):
+        ch = expr[i]
+        if ch == "(":
+            nivel += 1
+        elif ch == ")":
+            nivel -= 1
+        elif nivel == 0 and baixo.startswith(" or ", i):
+            partes.append(_sem_casca(expr[inicio:i]))
+            inicio = i + 4
+            i += 4
+            continue
+        i += 1
+    partes.append(_sem_casca(expr[inicio:]))
+    return partes
+
+
+def _expressao_apos(trecho: str, palavra: str) -> str | None:
+    m = re.search(palavra + r"\s*\(", trecho, re.I)
+    if not m:
+        return None
+    return _entre_parenteses(trecho, m.end() - 1)
+
+
+def _papeis_do_comando(trecho: str, palavra: str) -> set[str]:
+    """Papéis depois do último `to` (grant) ou `from` (revoke) de um statement."""
+    m = None
+    for m in re.finditer(rf"\b{palavra}\s+([a-z_,\s\"]+?)\s*(?:;|$|\bcascade\b|\brestrict\b|\bwith\b|\bgranted\b)",
+                         trecho, re.I):
+        pass
+    if not m:
+        return set()
+    return {r.strip().strip('"').lower() for r in m.group(1).split(",") if r.strip()}
+
+
+def _alcanca_anon(papeis) -> bool:
+    """Policy sem TO vale para PUBLIC, e PUBLIC inclui anon."""
+    return not papeis or "anon" in papeis or "public" in papeis
+
+
+def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
+    textos = [(rel(perfil, a), ler(a)) for a in coletar(perfil, "migrations")]
+    limpos = [(n, _sem_comentario(t)) for n, t in textos]
+
+    # Estrutura: colunas, FKs e CHECKs de cada tabela, e a ÚLTIMA definição de cada função.
+    tabelas: dict[str, dict] = {}
+    funcoes: dict[str, dict] = {}
+    for nome_arq, texto in limpos:
+        linha_de = _mapa_linhas(texto)
+        for m in RE_TABELA_ABRE.finditer(texto):
+            corpo = _entre_parenteses(texto, m.end() - 1)
+            t = tabelas.setdefault(m.group(1).lower(), {"colunas": {}, "fks": [], "checks": []})
+            t.update({"arquivo": nome_arq, "linha": linha_de(m.start())})
+            for p in _partes_de_topo(corpo):
+                tokens = p.replace('"', "").split()
+                if not tokens:
+                    continue
+                if re.search(r"\bcheck\s*\(", p, re.I):
+                    t["checks"].append(p)
+                if tokens[0].lower() in PALAVRAS_DE_RESTRICAO:
+                    fk = RE_FK_DE_TABELA.search(p)
+                    if fk:
+                        od = RE_ON_DELETE.search(p)
+                        t["fks"].append((fk.group(1).lower(), fk.group(2).lower(),
+                                         od.group(1).lower() if od else ""))
+                    continue
+                col = tokens[0].lower()
+                t["colunas"][col] = p
+                fk = RE_FK_DE_COLUNA.search(p)
+                if fk:
+                    od = RE_ON_DELETE.search(p)
+                    t["fks"].append((col, fk.group(1).lower(), od.group(1).lower() if od else ""))
+        for m in RE_FUNC.finditer(texto):
+            corpo = _corpo_da_funcao(texto, m.start())
+            abre = texto.find("(", m.end() - 1)
+            funcoes[m.group(1).lower()] = {
+                "arquivo": nome_arq, "linha": linha_de(m.start()), "corpo": corpo,
+                "params": _entre_parenteses(texto, abre).lower() if abre != -1 else "",
+                "definer": bool(re.search(r"security\s+definer", corpo, re.I)),
+                "trigger": bool(re.search(r"returns\s+trigger", corpo, re.I)),
+                "sem_texto": RE_LITERAL_SQL.sub("''", corpo),
+            }
+    # Estado final de EXECUTE por função, na ordem em que os comandos aparecem: um GRANT
+    # posterior reabre o que um REVOKE anterior fechou.
+    revogado: dict[str, set[str]] = {}
+    for nome_arq, texto in limpos:
+        for m in RE_ALTER_TABELA.finditer(texto):
+            t = tabelas.get(m.group(1).lower())
+            if t is None:
+                continue
+            st = _statement(texto, m.start())
+            col = RE_ADD_COLUNA.match(st, m.end() - m.start())
+            if col:
+                t["colunas"].setdefault(col.group(1).lower(), st)
+            if re.search(r"\bcheck\s*\(", st, re.I):
+                t["checks"].append(st)
+            fk = RE_FK_DE_TABELA.search(st)
+            if fk:
+                od = RE_ON_DELETE.search(st)
+                t["fks"].append((fk.group(1).lower(), fk.group(2).lower(), od.group(1).lower() if od else ""))
+        for m in RE_GRANT_OU_REVOKE.finditer(texto):
+            st = _statement(texto, m.start())
+            alvo = RE_ALVO_FUNCAO.search(st)
+            if not alvo:
+                continue
+            estado = revogado.setdefault(alvo.group(1).lower(), set())
+            if m.group(1).lower() == "revoke":
+                estado.update(_papeis_do_comando(st, "from"))
+            else:
+                estado.difference_update(_papeis_do_comando(st, "to"))
+    rls_on = set(banco.get("rls_habilitado", []))
+
+    def fechada_pra_visitante(nome: str) -> bool:
+        # No Supabase a função nasce com EXECUTE para PUBLIC e, por default privileges, para anon.
+        return {"public", "anon"} <= revogado.get(nome, set())
+
+    # 1. Helper de papel que ignora a flag de desativação.
+    flags = {t: [c for c in d["colunas"] if RE_FLAG_DESATIVACAO.match(c)] for t, d in tabelas.items()}
+    flags = {t: fs for t, fs in flags.items() if fs}
+    for nome, f in sorted(funcoes.items()):
+        # Nome de papel decide sozinho; prefixo is_/eh_/has_/tem_ só conta se a função olha quem
+        # está logado ou fala de papel no corpo, senão é pergunta sobre o dado (has_open_invoices).
+        if not (RE_NOME_DE_PAPEL.search(nome)
+                or (RE_PREFIXO_DE_PAPEL.search(nome)
+                    and ("auth.uid()" in f["corpo"].lower() or RE_PALAVRA_PAPEL.search(f["sem_texto"])))):
+            continue
+        lidas = {x.lower() for x in RE_REF_TABELA.findall(f["corpo"])} & set(flags)
+        for tabela in sorted(lidas):
+            fs = flags[tabela]
+            if not any(re.search(rf"\b{c}\b", f["sem_texto"], re.I) for c in fs):
+                add("papel-ignora-desativacao", "alto",
+                    f"Função `{nome}` decide papel lendo `{tabela}` sem olhar `{fs[0]}`",
+                    f["arquivo"], f["linha"],
+                    detalhe=f"`{tabela}` tem `{', '.join(fs)}`, mas a função que responde o papel "
+                            "não filtra por ela. Desativar a pessoa só esconde a tela: a policy que "
+                            "usa esta função continua liberando o banco. Filtrar a flag DENTRO "
+                            "da função.")
+
+    # 2. Coluna sensível liberada por GRANT de coluna (inclusive com vários privilégios no mesmo GRANT).
+    for nome_arq, texto in limpos:
+        linha_de = _mapa_linhas(texto)
+        for m in RE_GRANT_OU_REVOKE.finditer(texto):
+            if m.group(1).lower() != "grant":
+                continue
+            st = _statement(texto, m.start())
+            alvo_tab = re.search(r"\bon\s+(?:table\s+)?" + SQ + r"([a-z0-9_]+)", st, re.I)
+            if not alvo_tab or re.match(r"\s*function\b", st[alvo_tab.start() + 3:], re.I):
+                continue
+            colunas = [c.strip().strip('"').lower()
+                       for lista in re.findall(r"\bselect\s*\(([^)]*)\)", st, re.I)
+                       for c in lista.split(",")]
+            sensiveis = [c for c in colunas
+                         if RE_COL_SENSIVEL.search(c) and not RE_SUFIXO_NAO_SENSIVEL.search(c)]
+            alvo = sorted(_papeis_do_comando(st, "to") & {"anon", "authenticated", "public"})
+            if sensiveis and alvo:
+                add("coluna-sensivel-exposta", "alto",
+                    f"GRANT de `{', '.join(sensiveis)}` em `{alvo_tab.group(1)}` para {', '.join(alvo)}",
+                    nome_arq, linha_de(m.start()),
+                    detalhe="Privilégio de coluna libera o valor pra todo mundo que a RLS da "
+                            "tabela deixa ver a LINHA. Se a policy abre a linha pra colegas, o "
+                            "dado sensível vai junto. Tirar a coluna do grant e servir por "
+                            "função que confere o papel.")
+
+    # 3 e 4. Policies: escrita que só confere autoria, e storage para anon que depende de RLS.
+    policies_por_tabela: dict[str, list[dict]] = {}
+    for p in banco.get("policies", []):
+        policies_por_tabela.setdefault(p["tabela"], []).append(p)
+    for nome_arq, texto in limpos:
+        linha_de = _mapa_linhas(texto)
+        for m in RE_POLICY.finditer(texto):
+            trecho = _statement(texto, m.start())
+            nome, tabela = _nome_e_tabela(m)
+            comando = _comando_da_policy(trecho)
+            papeis = _roles_da_policy(trecho)
+            expr = _expressao_apos(trecho, r"with\s+check")
+            if expr is None and comando in ("update", "all"):
+                expr = _expressao_apos(trecho, r"\busing")
+            t = tabelas.get(tabela)
+            if comando in ("insert", "update", "all") and expr is not None and t:
+                expr = RE_UID_EMBRULHADO.sub("auth.uid()", re.sub(r"\s+", " ", expr)).lower()
+                autoria = None
+                for d in _disjuncoes(expr):
+                    autoria = (re.fullmatch(r"(?:\w+\.)?\"?(\w+)\"? ?= ?auth\.uid\(\)", d)
+                               or re.fullmatch(r"auth\.uid\(\) ?= ?(?:\w+\.)?\"?(\w+)\"?", d))
+                    if autoria:
+                        break
+                if autoria:
+                    col = autoria.group(1)
+                    outras = sorted({c for c, _, _ in t["fks"] if c != col})
+                    if outras:
+                        add("escrita-so-confere-autoria", "medio",
+                            f"Policy `{nome}` em `{tabela}` só confere autoria (`{col} = auth.uid()`)",
+                            nome_arq, linha_de(m.start()),
+                            detalhe=f"A linha aponta para {', '.join('`' + c + '`' for c in outras)}, "
+                                    "e a checagem de escrita (ou um dos lados do OR dela) não confere "
+                                    "se quem grava tem acesso a esse alvo. Basta ser o autor para "
+                                    "gravar contra recurso de outro escopo. Em UPDATE e ALL sem WITH "
+                                    "CHECK, o Postgres usa o USING como checagem, então ele entra na conta.")
+            eh_storage = re.search(r"\bon\s+\"?storage\"?\s*\.\s*\"?objects\b", trecho, re.I)
+            if eh_storage and comando in ("select", "all") and _alcanca_anon(papeis):
+                cegas = sorted({
+                    x.lower() for x in re.findall(r"\bfrom\s+" + SQ + r"([a-z0-9_]+)", trecho, re.I)
+                    if x.lower() in rls_on and not any(
+                        p["comando"] in ("select", "all") and _alcanca_anon(p["para"])
+                        for p in policies_por_tabela.get(x.lower(), []))})
+                if cegas:
+                    add("storage-anon-inerte", "medio",
+                        f"Policy `{nome}` em storage para visitante depende de `{', '.join(cegas)}`, "
+                        "que o visitante não lê",
+                        nome_arq, linha_de(m.start()),
+                        detalhe="O subselect roda sob a RLS do visitante, e nenhuma policy de "
+                                "leitura daquela tabela alcança anon: a policy de storage nunca "
+                                "libera nada. Ou o download funciona por outro caminho que ninguém "
+                                "documentou. Conferir como o arquivo chega de verdade.")
+
+    # 5. Papel concedido no cadastro sem e-mail confirmado.
+    for nome_arq, texto in limpos:
+        linha_de = _mapa_linhas(texto)
+        for m in RE_TRIGGER.finditer(texto):
+            trecho = _statement(texto, m.start())
+            if not re.search(r"\binsert\b[^;]*\bon\s+\"?auth\"?\s*\.\s*\"?users\b", trecho, re.I):
+                continue
+            alvo = re.search(r"execute\s+(?:function|procedure)\s+" + SQ + r"([a-z0-9_]+)", trecho, re.I)
+            f = funcoes.get(alvo.group(1).lower()) if alvo else None
+            if f and RE_CONVITE.search(f["corpo"]) and not re.search(r"confirmed_at", f["corpo"], re.I):
+                add("papel-no-cadastro-sem-confirmacao", "alto",
+                    f"Trigger `{m.group(1)}` dá papel no cadastro via `{alvo.group(1)}` sem exigir "
+                    "e-mail confirmado",
+                    nome_arq, linha_de(m.start()),
+                    detalhe="O papel do convite é concedido no INSERT em auth.users. Com a "
+                            "confirmação de e-mail desligada, quem souber o e-mail convidado cria "
+                            "a conta e herda o papel. Com ela ligada, `email_confirmed_at` ainda é "
+                            "nulo no INSERT: conceder num trigger AFTER UPDATE OF "
+                            "email_confirmed_at, quando ele deixar de ser nulo.")
+
+    # 6. Oráculo de convite: função com poder elevado que responde a visitante se um e-mail tem convite.
+    for nome, f in sorted(funcoes.items()):
+        if (f["definer"] and "email" in f["params"] and not fechada_pra_visitante(nome)
+                and (RE_CONVITE.search(nome) or RE_CONVITE.search(f["corpo"]))):
+            add("oraculo-de-convite", "medio",
+                f"Função `{nome}` responde a visitante se um e-mail tem convite",
+                f["arquivo"], f["linha"],
+                detalhe="É SECURITY DEFINER, recebe e-mail e não foi revogada de public e anon. No "
+                        "Supabase isso basta para virar RPC chamável sem login, mesmo sem GRANT "
+                        "explícito. Qualquer visitante descobre quais e-mails têm convite pendente, "
+                        "que é exatamente a lista de quem vale a pena tentar cadastrar primeiro.")
+
+    # 7. Regra de "primeiro usuário vira dono" que pode voltar a valer.
+    re_vazio = [
+        re.compile(r"not\s+exists\s*\(\s*select\s+[^()]*?\bfrom\s+" + SQ + r"[a-z0-9_]+\"?\s*\)", re.I),
+        re.compile(r"\(\s*select\s+count\s*\(\s*\*\s*\)\s+from\s+" + SQ + r"[a-z0-9_]+\"?\s*\)\s*=\s*0", re.I),
+        re.compile(r"count\s*\(\s*\*\s*\)\s+into\s+(\w+)\s+from\s+" + SQ + r"[a-z0-9_]+\"?\s*;"
+                   r"[\s\S]*?\bif\s+\1\s*=\s*0", re.I),
+    ]
+    for nome, f in sorted(funcoes.items()):
+        if any(r.search(f["corpo"]) for r in re_vazio) and re.search(r"'(owner|dono|admin)'", f["corpo"], re.I):
+            add("primeiro-usuario-vira-dono", "medio",
+                f"Função `{nome}` dá papel de dono quando a tabela está vazia",
+                f["arquivo"], f["linha"],
+                detalhe="A porta fecha quando existe o primeiro perfil, e reabre se a tabela "
+                        "esvaziar (um cascade de auth.users basta). Trocar por uma marca "
+                        "permanente de instalação feita, que nunca volta a ser falsa.")
+
+    # 8. SECURITY DEFINER sem REVOKE EXECUTE de public E anon.
+    for f in banco.get("funcoes", []):
+        nome = f["nome"]
+        info = funcoes.get(nome, {})
+        if not f.get("definer") or info.get("trigger") or fechada_pra_visitante(nome):
+            continue
+        add("definer-sem-revoke", "medio",
+            f"Função definer `{nome}` sem REVOKE EXECUTE de public e anon",
+            info.get("arquivo", "?"), info.get("linha"),
+            detalhe="Postgres concede EXECUTE a PUBLIC por padrão, e o Supabase concede também a "
+                    "anon e authenticated por default privileges. Revogar só de um dos dois deixa "
+                    "o outro caminho aberto. Se a função não é pra visitante: `revoke execute on "
+                    "function ... from public, anon` no mesmo arquivo que a cria. Limite: revoke "
+                    "por schema inteiro (`on all functions in schema`) não é reconhecido aqui.")
+
+    # 9. Enum que cresceu, com comparação negativa sobre coluna daquele enum.
+    crescidos = sorted({m.group(1).lower() for _, t in limpos for m in RE_ADD_VALUE.finditer(t)})
+    for enum in crescidos:
+        valores = set(banco.get("enums", {}).get(enum, []))
+        tipo = re.compile(rf"^\"?(\w+)\"?\s+{SQ}{enum}\"?(?:\s|$)", re.I)
+        cols = sorted({mm.group(1).lower() for t in tabelas.values()
+                       for p in t["colunas"].values() if (mm := tipo.match(p))})
+        if not cols:
+            continue
+        alt = "|".join(cols)
+        re_neg = re.compile(rf"\b({alt})\"?\s*(?:<>|!=)\s*'([^']+)'|\b({alt})\"?\s+not\s+in\s*\(([^)]*)\)", re.I)
+        for nome_arq, texto in limpos:
+            linha_de = _mapa_linhas(texto)
+            for m in re_neg.finditer(texto):
+                col = (m.group(1) or m.group(3)).lower()
+                lit = m.group(2) if m.group(2) is not None else m.group(4).strip()
+                literais = [lit] if m.group(2) is not None else re.findall(r"'([^']+)'", lit)
+                if not any(x in valores for x in literais):
+                    continue
+                add("enum-cresceu-comparacao-negativa", "medio",
+                    f"`{col} <> '{lit}'` compara com o enum `{enum}`, que ganhou valor novo"
+                    if m.group(2) is not None else
+                    f"`{col} not in ({lit})` compara com o enum `{enum}`, que ganhou valor novo",
+                    nome_arq, linha_de(m.start()), dimensao="corretude",
+                    detalhe="`<> 'x'` e `not in (...)` passam a incluir todo valor que o enum "
+                            "ganhar depois. Um contador de abertos passa a contar pausado ou "
+                            "cancelado. Trocar por lista positiva do que conta.")
+
+    # 10. Intervalo de tempo sem CHECK de ordem (inline na coluna, na tabela ou por alter table).
+    for tabela, t in sorted(tabelas.items()):
+        for a, b in PARES_INTERVALO:
+            if a not in t["colunas"] or b not in t["colunas"]:
+                continue
+            if not any(re.search(rf"\b{a}\b", c, re.I) and re.search(rf"\b{b}\b", c, re.I) for c in t["checks"]):
+                add("intervalo-sem-check", "medio",
+                    f"`{tabela}` tem `{a}` e `{b}` sem CHECK de ordem",
+                    t.get("arquivo", "?"), t.get("linha"), dimensao="corretude",
+                    detalhe=f"Nada impede gravar `{b}` antes de `{a}`: a duração sai negativa e "
+                            "desconta ou infla qualquer saldo que some esse intervalo. "
+                            f"`check ({b} is null or {b} >= {a})`.")
+
+    # 11. FK em cascata que apaga histórico financeiro ou de horas.
+    for tabela, t in sorted(tabelas.items()):
+        tokens = set(tabela.split("_"))
+        if not (tokens & TOKENS_HISTORICO) or (tokens & TOKENS_NAO_HISTORICO):
+            continue
+        for col, ref, on_delete in sorted(set(t["fks"])):
+            if on_delete == "cascade":
+                add("cascade-apaga-historico", "medio",
+                    f"`{tabela}.{col}` apaga o histórico junto com `{ref}` (on delete cascade)",
+                    t.get("arquivo", "?"), t.get("linha"), dimensao="corretude",
+                    detalhe="Apagar o registro pai some com as linhas de histórico, e o saldo já "
+                            "mostrado ao cliente muda sem rastro. Usar `restrict` e arquivar o pai, "
+                            "ou copiar o histórico antes.")
+
+    # 12. Documentação que cita policy que não existe.
+    conhecidos = ({p["nome"] for p in banco.get("policies", [])} | set(tabelas) | set(funcoes)
+                  | {c for t in tabelas.values() for c in t["colunas"]} | PAPEIS_DO_BANCO
+                  | {t["nome"] for t in banco.get("triggers", [])}
+                  | {v["nome"] for v in banco.get("views", [])} | set(banco.get("enums", {})))
+    for arq in coletar(perfil, "docs"):
+        for n, linha in enumerate(ler(arq).splitlines(), 1):
+            if not re.search(r"polic", linha, re.I):
+                continue
+            for tok in re.findall(r"`([a-z0-9_]+)`", linha):
+                if "_" in tok and tok not in conhecidos:
+                    add("doc-cita-policy-inexistente", "medio",
+                        f"Documentação cita a policy `{tok}`, que não existe nas migrations",
+                        rel(perfil, arq), n,
+                        detalhe="A instalação limpa não cria o que o manual promete. Ou a policy "
+                                "foi aplicada à mão em produção (repo e banco divergiram), ou o "
+                                "manual descreve proteção que não existe.")
 
 
 # ---------------------------------------------------------------------------

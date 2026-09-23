@@ -102,6 +102,7 @@ Corpo de conhecimento da dimensão A (segurança e abuso). Calibrado pra stack S
 | URL pública onde deveria ser assinada | `alto` | `getPublicUrl` em documento privado | Usa `createSignedUrl` com TTL curto. |
 | Path não escopado por dono | `critico` | caminho do objeto sem o id do dono, ou policy que não confere | Convenção `(storage.foldername(name))[1] = auth.uid()::text` mais policy que a impõe. |
 | Upload sem validação real | `medio` | só valida extensão | Valida MIME de verdade, limita tamanho e restringe a lista. Atenção a SVG e HTML, que executam script. |
+| Linha de metadado aponta para caminho de outro dono | `alto` | tabela de arquivo sem UNIQUE em `storage_path` e sem prefixo do dono amarrado na policy; um usuário cria linha própria apontando para o caminho de outro e herda leitura e exclusão | UNIQUE no caminho, caminho gerado pelo servidor com o prefixo do dono, e a policy de storage confere o prefixo. |
 
 ---
 

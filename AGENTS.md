@@ -79,7 +79,7 @@ terminal, em qualquer sistema, sem IA envolvida. O agente entra só onde é prec
 contexto.
 
 Para provar que a instalação está sã: `python verificar.py`. Ele roda contra o app de exemplo em
-`exemplo/`, que tem um defeito plantado para cada detector, e confere 19 detectores, o inventário
+`exemplo/`, que tem um defeito plantado para cada detector, e confere 31 detectores, o inventário
 medido, a prova de cobertura e a integridade do painel.
 
 ## Ao terminar

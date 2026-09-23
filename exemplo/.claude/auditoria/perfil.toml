@@ -16,6 +16,7 @@ middlewares      = ["src/lib/auth/middleware.server.ts"]
 frontend         = ["src/routes/**/*.tsx", "src/components/**/*.tsx"]
 config_deploy    = ["vercel.json"]
 testes           = ["src/**/*.test.ts"]
+docs             = ["INSTALL.md", "README.md"]
 ignorar = ["node_modules", "dist", ".vercel"]
 
 [[tipos_de_acesso]]

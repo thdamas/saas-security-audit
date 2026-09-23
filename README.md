@@ -11,7 +11,7 @@ Read-only. It finds, proves and proposes. It never touches your code.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](#requirements)
-[![Self-test](https://img.shields.io/badge/self--test-19%20detectors-brightgreen.svg)](#quick-start)
+[![Self-test](https://img.shields.io/badge/self--test-31%20detectors-brightgreen.svg)](#quick-start)
 
 ```
 $ python verificar.py          # real output, Portuguese; glosses added here
@@ -21,6 +21,8 @@ $ python verificar.py          # real output, Portuguese; glosses added here
   ok   definer-sem-search-path = 1     # ...and the one WITH search_path is not flagged
   ok   policy-tautologica = 1          # only the real one; neighbours must not be accused
   ok   privilegio-no-frontend = 1      # service-role client imported into a .tsx component
+  ok   papel-ignora-desativacao = 3    # role helper ignores the 'active' flag, so deactivating a user changes nothing
+  ok   escrita-so-confere-autoria = 4  # write policy only checks authorship, not the target
   ...
   ok   recorte de policy nao invade a vizinha
   ok   cobertura provada em 3 universos       # coverage proven across 3 universes
@@ -29,7 +31,7 @@ $ python verificar.py          # real output, Portuguese; glosses added here
   ok   exatamente um </script>
   ok   segredo do exemplo nao aparece inteiro no painel
   ok   zero requisicao externa (fonte, script, css)
-  ok   gate contou 11 bloqueadores (4 criticos + 7 altos)
+  ok   gate contou 20 bloqueadores (4 criticos + 16 altos)
 
 APROVADO: scanner, detectores, cobertura e painel funcionam nesta maquina.
 ```
@@ -72,6 +74,7 @@ That's **dimension B (correctness)**, with four lenses of its own. It is the par
 - **Not a replacement** for an external pentest or a human security review.
 - **The scanner reads migrations**, so it sees what was *requested*, not what's in the database. That's what phase 1 (ground truth) is for.
 - **LLM findings can be wrong.** Hence the skeptic, the mandatory `file:line`, and a calibration gate after the very first batch.
+- **The tenancy and correctness detectors are heuristics, and their blind spots are written down.** They recognize role helpers and history tables by name, match enum comparisons by column name (not by table), miss an invite oracle whose e-mail parameter has another name, do not understand `revoke ... on all functions in schema`, and cannot read a SQL function whose body is a single-quoted string instead of `$$`. Each finding says what to confirm.
 - **Passing the gate is not a certification.** It's an informed verdict about what was examined, shipped with the list of what wasn't.
 
 > **Português:** [README.pt-BR.md](README.pt-BR.md).
@@ -117,7 +120,7 @@ python scanner.py --perfil exemplo/.claude/auditoria/perfil.toml --saida ./saida
 python painel.py --pasta ./saida/exemplo-assinatura/*-completa --abrir
 ```
 
-`verificar.py` checks 19 detectors, the measured inventory, the coverage proof and 5 properties of the dashboard. If it prints `APROVADO`, you're good.
+`verificar.py` checks 31 detectors (each with a clean case it must NOT flag), the measured inventory, the coverage proof and 5 properties of the dashboard. If it prints `APROVADO`, you're good.
 
 ### On your own app
 
@@ -157,6 +160,8 @@ An audit produces the most sensitive document a project will ever have.
 ## License and credit
 
 Apache-2.0. Built by **[ALQUIM_IA.LAB](https://alquimialab.com.br)** (Thiago Menezes).
+
+Twelve of the detectors (tenancy and business correctness: role helpers that ignore deactivation, column grants on sensitive data, authorship-only write policies, invite roles granted before email confirmation, cascades that erase billable history, docs that cite policies that don't exist, and more) came from reading, line by line, the open source [Órbita](https://github.com/felipefernandees/orbita) (MIT, by Felipe Tâmbara). Each one was a real hole there.
 
 **Prefer it explained visually?** There is a walkthrough of the whole method, both dimensions, the nine vulnerability families and the four correctness lenses, at **[saas-security.alquimialab.com.br](https://saas-security.alquimialab.com.br)**. It opens in the browser, no install required.
 

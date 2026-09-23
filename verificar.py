@@ -31,12 +31,12 @@ ESPERADOS = [
     ("rls-ausente", 1, "tabela `convites` sem RLS"),
     ("rls-sem-policy", 1, "tabela `logs_admin` com RLS e zero policy"),
     ("policy-tautologica", 1, "policy `planos_publicos` com using (true); as vizinhas NÃO podem ser acusadas"),
-    ("escrita-sem-with-check", 1, "policy de UPDATE em `profiles` só com USING"),
+    ("escrita-sem-with-check", 2, "UPDATE só com USING em `profiles` e em `comentarios`"),
     ("definer-sem-search-path", 1, "`marcar_inadimplente`; `contar_assinantes` tem search_path e NÃO entra"),
     ("search-path-mutavel", 2, "`eh_staff` e `total_pago`, não-definer sem search_path"),
     ("view-definer", 1, "view `resumo_financeiro` sem security_invoker = true"),
     ("grant-anon", 1, "grant select em `planos` para anon"),
-    ("policy-empilhada", 1, "`assinaturas` com 2 policies de SELECT"),
+    ("policy-empilhada", 2, "`assinaturas` com 2 de SELECT e `storage.objects` com 3 de SELECT"),
     ("rpc-fantasma", 1, "`recalcular_saldo` chamada e nunca criada"),
     ("privilegio-no-frontend", 1, "supabaseAdmin importado em componente .tsx"),
     ("rota-api-sem-verificacao", 1, "`api.descadastrar.ts`; o webhook verifica assinatura e NÃO entra"),
@@ -47,13 +47,63 @@ ESPERADOS = [
     ("teste-de-seguranca-ausente", 4, "nenhum teste com rls/webhook/autoriz/isolament no nome"),
     ("backup-incerto", 1, "plano free + migration à mão"),
     ("sem-gate-de-ci", 1, "push direto na main sem CI"),
+    ("papel-ignora-desativacao", 3, "`papel_atual`, `is_gestor` (só cita 'ativo' como texto) e `is_org_admin` (usuário por parâmetro); `eh_dono` olha e NÃO entra"),
+    ("coluna-sensivel-exposta", 3, "`valor_hora`, o de dois privilégios e o `with grant option`; `token_count` NÃO entra; o grant sem coluna sensível NÃO entra"),
+    ("escrita-so-confere-autoria", 4, "`apontamentos_insert_autor`, o lado autor do OU, `payments` no formato do db diff e `comentarios` só com USING; `tarefas_insert_membro` confere mais que autoria e NÃO entra"),
+    ("storage-anon-inerte", 2, "`portal_baixa_arquivo` pra anon e `portal_sem_papel` sem TO; `portal_documento_publico` tem policy de anon na tabela e NÃO entra; a de insert pra authenticated NÃO entra"),
+    ("papel-no-cadastro-sem-confirmacao", 2, "`trg_aplicar_convite` e o `create or replace trigger`; a versão que exige email_confirmed_at NÃO entra"),
+    ("oraculo-de-convite", 2, "`email_convidado` e `convite_reaberto`, que teve grant DEPOIS do revoke"),
+    ("primeiro-usuario-vira-dono", 3, "not exists sem filtro, count em subselect e count into"),
+    ("definer-sem-revoke", 8, "os 4 de antes, o revoke só de anon, `convite_por_token`, `perfil_por_email` e `convite_reaberto`"),
+    ("enum-cresceu-comparacao-negativa", 2, "`status <> 'cancelada'` e `fase <> 'fechada'` de enum entre aspas; `papel <> 'cancelada'` e o comentário NÃO entram"),
+    ("intervalo-sem-check", 1, "`apontamentos` (inicio, fim); `pacotes_horas` tem check e NÃO entra"),
+    ("cascade-apaga-historico", 4, "inline, por alter table, por constraint de tabela e `payments` no formato do db diff; `horarios` NÃO entra; `tarefas.membro_id` não é histórico e NÃO entra"),
+    ("doc-cita-policy-inexistente", 1, "INSTALL cita `portal_le_documentos`; `planos_publicos` existe e NÃO entra"),
+]
+
+# Casos limpos que NÃO podem aparecer no título de nenhum achado da regra.
+NEGATIVOS = [
+    ("papel-ignora-desativacao", "eh_dono"),
+    ("coluna-sensivel-exposta", "anon"),
+    ("escrita-so-confere-autoria", "tarefas_insert_membro"),
+    ("storage-anon-inerte", "equipe_sobe_arquivo"),
+    ("papel-no-cadastro-sem-confirmacao", "aplicar_convite_confirmado"),
+    ("definer-sem-revoke", "eh_dono"),
+    ("definer-sem-revoke", "definir_primeiro_acesso"),
+    ("intervalo-sem-check", "pacotes_horas"),
+    ("cascade-apaga-historico", "tarefas.membro_id"),
+    ("doc-cita-policy-inexistente", "planos_publicos"),
+    ("doc-cita-policy-inexistente", "vault_master_key"),
+    ("doc-cita-policy-inexistente", "trg_aplicar_convite"),
+    ("doc-cita-policy-inexistente", "service_role"),
+    ("doc-cita-policy-inexistente", "membro_id"),
+    ("doc-cita-policy-inexistente", "`select`"),
+    ("papel-ignora-desativacao", "contar_tarefas_do_membro"),
+    ("storage-anon-inerte", "portal_documento_publico"),
+    ("oraculo-de-convite", "convite_por_token"),
+    ("oraculo-de-convite", "perfil_por_email"),
+    ("oraculo-de-convite", "email_ja_convidado"),
+    ("definer-sem-revoke", "email_ja_convidado"),
+    ("intervalo-sem-check", "turnos"),
+    ("intervalo-sem-check", "sessoes"),
+    ("cascade-apaga-historico", "horarios"),
+    ("enum-cresceu-comparacao-negativa", "papel <>"),
+    ("enum-cresceu-comparacao-negativa", "'ativa'"),
+    ("enum-cresceu-comparacao-negativa", "rascunho"),
+    ("papel-ignora-desativacao", "tem_tarefa_aberta"),
+    ("coluna-sensivel-exposta", "token_count"),
+    ("cascade-apaga-historico", "avisos_horas"),
+    ("oraculo-de-convite", "assinaturas_em_aberto"),
+    ("escrita-so-confere-autoria", "preferencias_insert_propria"),
+    ("primeiro-usuario-vira-dono", "equipe_vazia"),
+    ("primeiro-usuario-vira-dono", "nenhum_cadastro"),
 ]
 
 INVENTARIO_ESPERADO = {
-    ("banco", "total_tabelas"): 6,
-    ("banco", "total_policies"): 6,
-    ("banco", "total_funcoes"): 4,
-    ("banco", "total_definer"): 2,
+    ("banco", "total_tabelas"): 25,
+    ("banco", "total_policies"): 30,
+    ("banco", "total_funcoes"): 26,
+    ("banco", "total_definer"): 19,
     ("codigo", "total_server_functions"): 5,
     ("codigo", "total_rotas_api"): 2,
     ("codigo", "total_testes"): 1,
@@ -131,6 +181,13 @@ def main() -> int:
     if inesperadas:
         falha(f"regras não previstas no exemplo: {inesperadas}", erros)
 
+    for regra, limpo in NEGATIVOS:
+        acusados = [a["titulo"] for a in mec["achados"] if a["regra"] == regra and limpo in a["titulo"]]
+        if acusados:
+            falha(f"{regra} acusou o caso limpo `{limpo}`: {acusados}", erros)
+        else:
+            ok(f"{regra} não acusa o caso limpo `{limpo}`")
+
     # Falso positivo específico do recorte de statement: as policies vizinhas da tautologia.
     titulos_taut = [a["titulo"] for a in mec["achados"] if a["regra"] == "policy-tautologica"]
     if any("assinaturas_select_proprio" in t or "pagamentos_select_proprio" in t for t in titulos_taut):
@@ -181,8 +238,8 @@ def main() -> int:
             ok("baseline de status gravado fora da pasta da rodada")
         else:
             falha("baseline não foi gravado", erros)
-        if "11 bloqueador" in r.stdout:
-            ok("gate contou 11 bloqueadores (4 críticos + 7 altos)")
+        if "20 bloqueador" in r.stdout:
+            ok("gate contou 20 bloqueadores (4 críticos + 16 altos)")
         else:
             falha(f"gate com contagem inesperada: {r.stdout.strip()}", erros)
 

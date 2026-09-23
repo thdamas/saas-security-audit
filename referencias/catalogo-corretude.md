@@ -122,6 +122,21 @@ E o agravante que vira lição: o schema **já tinha a coluna certa**, e um come
 
 ---
 
+## B5. Saldo, tempo e contagem
+
+> **A pergunta:** o número que o cliente vê (saldo, consumo, contagem, prazo) continua certo quando o dado envelhece, cresce ou é corrigido?
+
+**A origem da lente:** a leitura linha a linha de um SaaS real de gestão de clientes e pacote de horas (Órbita, MIT, 23/09/2026). Cada item abaixo era um defeito lá. Os que dão pra ver no texto do SQL já viraram detector mecânico (`intervalo-sem-check`, `cascade-apaga-historico`, `enum-cresceu-comparacao-negativa`); estes quatro precisam de leitura.
+
+1. **Saldo com janela que nunca reinicia.** Crédito, franquia ou pacote cuja conta começa no PRIMEIRO lançamento e nunca fecha. Excedente antigo sem cobertura come o crédito novo no dia em que ele nasce. Conferir: a conta consome por lote datado (razão contábil), ou soma tudo desde sempre? Refutação: cada crédito tem janela própria e o excedente de um período fica registrado no período dele.
+2. **Contrato sem vigência.** Valor, taxa ou pacote guardado como número atual, sem data de início e fim. Mudou o valor, os meses passados passam a ser recalculados com o valor novo, e o relatório de março muda em setembro. Conferir: existe tabela de vigência, ou o cálculo lê a coluna atual? Refutação: todo valor usado em cálculo tem `valido_de` e `valido_ate`, e o cálculo filtra pelo período.
+3. **A mesma regra copiada em N lugares.** Consumo do pacote calculado numa função pro painel, noutra pro portal e numa terceira pro CSV. Concordam hoje e divergem no primeiro ajuste. Conferir por grep: quantas funções ou telas calculam o mesmo número? Refutação: uma função fonte, e todas as outras leem dela.
+4. **Deduplicação e "últimos N" que comparam a coisa errada.** Dedup que compara o valor inteiro com o valor já truncado ao gravar (título longo nunca casa, e cada repetição abre registro novo); lista de "últimas execuções" ordenada por um campo de texto em vez da data. Conferir: o valor comparado passou pela mesma transformação do valor gravado? A ordenação é pela coluna de tempo? Refutação: a comparação usa a mesma função de normalização da gravação, com teste.
+
+⚠️ **Limite declarado do detector de enum:** ele só vê o crescimento quando existe `alter type ... add value` nas migrations. Um schema consolidado num arquivo só (dump) cria o enum já com todos os valores, e o crescimento fica invisível. Nesse caso, ler todo `<>` e `not in` sobre coluna de status à mão.
+
+---
+
 ## Como reportar um achado de corretude
 
 Mesmo esquema da dimensão A, com dois campos diferentes:

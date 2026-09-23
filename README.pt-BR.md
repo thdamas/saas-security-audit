@@ -59,7 +59,7 @@ python scanner.py --perfil exemplo/.claude/auditoria/perfil.toml --saida ./saida
 python painel.py --pasta ./saida/exemplo-assinatura/*-completa --abrir
 ```
 
-O `verificar.py` confere 19 detectores, o inventário medido, a prova de cobertura e 5 propriedades do painel. Se ele imprime `APROVADO`, a ferramenta está funcionando.
+O `verificar.py` confere 31 detectores (cada um com um caso limpo que ele NÃO pode acusar), o inventário medido, a prova de cobertura e 5 propriedades do painel. Se ele imprime `APROVADO`, a ferramenta está funcionando.
 
 ### No seu app
 
@@ -116,6 +116,7 @@ Auditar produz o documento mais sensível que o projeto vai ter. As regras aqui 
 - **Não substitui pentest externo** nem revisão humana de segurança.
 - **O scanner lê migrations**, então ele vê o que foi pedido, não o que está no banco. Por isso a fase 1 existe.
 - **Achado de LLM pode errar.** É por isso que existe o cético, o `arquivo:linha` obrigatório e o portão de calibragem.
+- **Os detectores de escopo e corretude são heurísticos, e os pontos cegos estão escritos.** Reconhecem função de papel e tabela de histórico pelo nome, amarram a comparação de enum pelo nome da coluna (não pela tabela), não pegam o oráculo de convite cujo parâmetro de e-mail tem outro nome não entendem `revoke ... on all functions in schema` e não leem função SQL cujo corpo é string entre aspas simples em vez de `$$`. Cada achado diz o que conferir.
 - Passar no gate **não é certificado de nada**. É um veredito informado sobre o que foi olhado, com a lista do que não foi.
 
 ## Estrutura
@@ -133,6 +134,8 @@ exemplo/            SaaS fictício com um defeito plantado por detector
 ## Licença e crédito
 
 Apache-2.0. Criado por **[ALQUIM_IA.LAB](https://alquimialab.com.br)** (Thiago Menezes).
+
+Doze dos detectores (escopo e corretude de negócio: função de papel que ignora a desativação, grant de coluna sensível, policy de escrita que só confere o autor, papel de convite concedido antes do e-mail confirmado, cascata que apaga histórico cobrável, manual que cita policy que não existe, entre outros) nasceram da leitura linha a linha do [Órbita](https://github.com/felipefernandees/orbita), open source (MIT) do Felipe Tâmbara. Cada um era um buraco real lá.
 
 **Prefere ver explicado?** Tem uma apresentação do método inteiro, com as duas dimensões, as nove famílias de falha e as quatro lentes de corretude, em **[saas-security.alquimialab.com.br](https://saas-security.alquimialab.com.br)**. Abre no navegador, sem instalar nada.
 

@@ -60,7 +60,7 @@ Severidade da B é por **consequência**: cobra quem não devia > nega quem tem 
 
 **Fase 1 · Ground truth.** Puxo o estado REAL, não só as migrations: advisors de segurança, lista de tabelas e extensões, dump de schema, buckets, cron jobs. Grava cru em `ground-truth/`. **Migration diz o que foi pedido; o dump diz o que é.** Com o MCP do Supabase, `get_advisors` já lista de graça as funções `SECURITY DEFINER` executáveis por `anon`.
 
-**Fase 2 · Mecânico.** `python scanner.py --perfil <caminho> --print`. Zero LLM. Produz inventário, achados determinísticos e o **manifesto com a lista explícita de cada lote**, validado por asserção: soma dos lotes igual ao universo, interseção vazia. **Mostro o resumo e a prova de cobertura antes de gastar um agente.**
+**Fase 2 · Mecânico.** `python scanner.py --perfil <caminho> --print`. Zero LLM. Produz inventário, achados determinísticos e o **manifesto com a lista explícita de cada lote**, validado por asserção: soma dos lotes igual ao universo, interseção vazia. **Mostro o resumo e a prova de cobertura antes de gastar um agente.** Com o inventário na mão, escrevo o **modelo de ameaça** (seção 0 do `referencias/catalogo-seguranca.md`), que vai no topo do relatório e no briefing de cada lote.
 
 **Fase 3 · Lote 01, o portão de calibragem.** Rodo **um** lote e mostro o formato do achado. Se o prompt estiver torto, o erro morre em 1 em vez de se multiplicar por 14.
 

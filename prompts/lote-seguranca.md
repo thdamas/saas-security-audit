@@ -35,6 +35,7 @@ Estes são **todos** os itens que você audita, e você audita **todos**. A list
 1. **`{{CATALOGO_SEGURANCA}}`** — o catálogo de classes de falha. Traz, pra cada classe, a severidade base, como confirmar e, o mais importante, **o que REFUTA o achado**. Antes de escrever qualquer achado, procure ativamente o bloqueador que o refutaria. Se encontrar o bloqueador, não é achado.
 2. O `perfil.toml` acima, especialmente `[tabelas]` (o que é dinheiro, o que é dado pessoal, o que é só de staff) e `[[tipos_de_acesso]]`.
 3. **`{{INVENTARIO}}`** — o inventário mecânico já medido (policies por tabela, funções definer, sítios de privilégio). Use como mapa, não repita o trabalho dele: achado puramente mecânico já foi capturado. Você entra onde precisa de **julgamento de contexto**.
+4. **Referência por stack, só a que casa.** Se o app tem backend em FastAPI, React no front ou front web sem framework, abra a seção pertinente de `{{REFERENCIAS_EXTERNAS}}` (a pasta `referencias/externas/openai/` da skill, que o orquestrador troca pelo caminho absoluto como faz com o catálogo: `python-fastapi-web-server-security.md`, `javascript-typescript-react-web-frontend-security.md`, `javascript-general-web-frontend-security.md`). É material de apoio: onde conflitar com o catálogo, o catálogo vence.
 
 ## O que perguntar de cada item
 
@@ -47,6 +48,8 @@ Do catálogo, com prioridade nesta ordem:
 5. **Entrada não confiável.** Identidade derivada do JWT verificado no servidor, ou aceita do corpo da requisição? Escrita com allow-list de campo, ou grava o objeto inteiro?
 6. **Injeção nesta stack.** `.or()` e `.filter()` do PostgREST recebem **string**, não parâmetro: input do usuário concatenado ali é injetável de verdade (`.eq()` parametriza e não é).
 7. **Falha silenciosa que vira permissão.** `supabase-js` **não lança**, devolve `{ data, error }`. Ignorar o `error` transforma falha de infra em dado vazio. Se vazio cai no ramo permissivo, é falha aberta.
+8. **Valor que parece interno.** URL que o servidor busca (SSRF), caminho que vai ser apagado ou movido, argumento que a saída de LLM preenche: quem ESCREVEU esse valor? Se foi o usuário, vale tudo que vale pra campo de formulário.
+9. **Estado que vive numa instância só.** Contador de tentativa, cache de permissão ou trava guardados em memória de função serverless não valem entre instâncias.
 
 ## Formato de saída
 
@@ -65,7 +68,7 @@ Escreva **só** o arquivo `{{ARQUIVO_SAIDA}}`, JSON válido, exatamente neste es
     {
       "titulo": "frase curta e específica",
       "severidade": "critico | alto | medio | baixo | info",
-      "categoria": "rls | idor | autorizacao | privilegio | xss | injecao | webhook | segredo | storage | ia | headers | logs | lgpd | supply-chain | resiliencia",
+      "categoria": "rls | idor | autorizacao | privilegio | xss | injecao | ssrf | webhook | segredo | storage | ia | headers | logs | lgpd | supply-chain | resiliencia",
       "objeto": "tabela.policy / função / arquivo::símbolo",
       "arquivo": "caminho/relativo.ts",
       "linha": 123,

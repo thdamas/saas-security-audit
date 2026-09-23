@@ -9,3 +9,11 @@ e o texto oficial em http://www.apache.org/licenses/LICENSE-2.0
 
 A dimensão de corretude de negócio (dimensão B: matriz de acesso, direção da falha,
 consistência entre caminhos e âncora de regra externa) é autoria da ALQUIM_IA.LAB.
+
+Material de terceiros incluído:
+
+- referencias/externas/openai/: três referências de segurança por stack (FastAPI, React e
+  front-end web) de openai/skills, skills/.curated/security-best-practices, commit 5c8f1e2.
+  Apache License 2.0, texto em referencias/externas/openai/LICENSE.txt. Arquivos íntegros.
+- A seção 0 e seis classes do referencias/catalogo-seguranca.md foram destiladas de
+  addyosmani/agent-skills, skills/security-and-hardening, commit d1463fd (MIT), e reescritas.

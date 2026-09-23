@@ -14,6 +14,17 @@ Corpo de conhecimento da dimensão A (segurança e abuso). Calibrado pra stack S
 | `baixo` | hardening ausente sem exploração clara |
 | `info` | observação, melhoria, ponto que exige verificação manual |
 
+
+## 0. Antes de caçar: o modelo de ameaça em 5 minutos
+
+Classe de falha sem modelo de ameaça é palpite. Com o inventário da Fase 2 na mão e antes de montar os lotes, escrever em poucas linhas (vai no topo do relatório e no briefing de cada lote):
+
+1. **Fronteiras de confiança.** Onde dado de fora entra: requisição, formulário, upload, webhook, API de terceiro, fila, **saída de LLM**, e o valor que só PARECE interno (nome de arquivo em pasta compartilhada, caminho dentro de payload de job, config editável por usuário). **A confiança segue quem ESCREVEU o valor, não o canal que entregou.**
+2. **Ativos.** O que vale roubar ou quebrar NESTE app: credencial, dado pessoal, pagamento, ação de admin, dinheiro.
+3. **STRIDE por fronteira, rápido.** Dá pra se passar por alguém? Adulterar o dado? Negar que fez? Vazar? Derrubar ou fazer cobrar? Ganhar privilégio?
+
+Fronteira que o auditor não consegue nomear é justamente a que ninguém protegeu.
+
 ---
 
 ## 1. RLS e policies
@@ -76,6 +87,8 @@ Corpo de conhecimento da dimensão A (segurança e abuso). Calibrado pra stack S
 | Token público sem vínculo, expiração ou uso único | `alto` | link de descadastro, convite ou compartilhamento com token adivinhável | Token com HMAC, expiração curta e invalidação após uso. Citar a geração e a validação. |
 | Cron endpoint chamável à mão | `medio` | rota de cron sem `Authorization: Bearer` com comparação segura | Compara com segredo em tempo constante. Comparação por `===` de string é aceitável na prática, mas registrar. |
 | Mass assignment | `critico` | corpo da requisição gravado inteiro no banco | Allow-list explícita de campos, ou schema estrito (Zod) que rejeita campo desconhecido, ou trigger que barra coluna de sistema. |
+| **SSRF: o servidor busca a URL que o usuário escolhe** | `alto`, `critico` se o provedor expõe metadado | `fetch`/`axios` no servidor com URL vinda de corpo, query, config de webhook, "importar de URL", proxy de imagem ou prévia de link | Allow-list de esquema e host, **e** resolução de TODOS os registros DNS recusando endereço privado ou reservado (loopback, `169.254.169.254`, faixas privadas, IPv6 local), **e** redirecionamento proibido. Conferir só o texto da URL não refuta: o DNS pode apontar pra dentro. |
+| Rate limit com contador em memória | `medio`, `alto` se protege login, OTP ou checkout | `Map`, objeto ou variável de módulo contando tentativas dentro de função serverless, edge ou app com mais de uma instância | O contador mora em armazenamento compartilhado (tabela no Postgres, KV, Redis). Em serverless o contador em memória nasce zerado em cada instância: o limite vira `max × instâncias` ou nunca dispara. |
 
 ---
 
@@ -103,6 +116,7 @@ Corpo de conhecimento da dimensão A (segurança e abuso). Calibrado pra stack S
 | Path não escopado por dono | `critico` | caminho do objeto sem o id do dono, ou policy que não confere | Convenção `(storage.foldername(name))[1] = auth.uid()::text` mais policy que a impõe. |
 | Upload sem validação real | `medio` | só valida extensão | Valida MIME de verdade, limita tamanho e restringe a lista. Atenção a SVG e HTML, que executam script. |
 | Linha de metadado aponta para caminho de outro dono | `alto` | tabela de arquivo sem UNIQUE em `storage_path` e sem prefixo do dono amarrado na policy; um usuário cria linha própria apontando para o caminho de outro e herda leitura e exclusão | UNIQUE no caminho, caminho gerado pelo servidor com o prefixo do dono, e a policy de storage confere o prefixo. |
+| Apagar, mover ou sobrescrever com caminho que veio de fora | `alto`, `critico` se atravessa dono | `storage.remove`, `move`, `upload` com `upsert`, ou `rm`/`unlink` cujo alvo sai do corpo, de config ou de payload de job | As três coisas juntas, lidas ANTES da operação: o alvo resolvido fica dentro de uma raiz permitida; fica pelo menos um nível abaixo dela (nunca a raiz inteira); e existe prova de dono (linha no banco com o dono da sessão, prefixo gerado pelo servidor). Conferir só o formato do caminho não refuta. Na recusa, parar, nunca cair pra um caminho mais amplo. |
 
 ---
 
@@ -115,6 +129,8 @@ Corpo de conhecimento da dimensão A (segurança e abuso). Calibrado pra stack S
 | Saída da IA usada em decisão sensível | `alto` | resposta do modelo decide plano, permissão ou estado de cobertura | A IA só informa e a decisão vem do banco. **Nuance: em produto regulado (seguro, saúde, crédito), informar errado tem dano equivalente a permitir errado.** |
 | Denial-of-wallet | `medio` a `alto` | endpoint de IA sem cota | Cota por usuário e por período. |
 | PII indo pro provedor sem necessidade | `medio` | dado pessoal no prompt sem precisar | Só vai o mínimo. Registrar a retenção do provedor. |
+| Saída do modelo vira argumento | `alto` | resposta do LLM entra em consulta, filtro, caminho de arquivo, comando, URL de fetch ou argumento de ferramenta | A saída é validada contra schema e allow-list antes do uso. O prompt de sistema não é fronteira de segurança: a permissão mora no código. |
+| RAG ou memória sem partição por dono | `critico` | busca vetorial, embeddings ou histórico consultados sem filtro de tenant ou dono | Filtro por dono no servidor, provado no `where` da busca, ou índice separado por tenant. |
 
 ---
 
@@ -127,6 +143,7 @@ Corpo de conhecimento da dimensão A (segurança e abuso). Calibrado pra stack S
 | Push direto na main sem gate de CI | `medio` | sem branch protection e sem workflow | Existe gate rodando por PR. **Bundler não faz typecheck: build verde não prova tipo.** Rodar sempre `tsc --noEmit` E `build`. |
 | Dependência com CVE alta | `medio` a `alto` | `npm audit` | Não alcançável pelo caminho usado. Colar a saída do comando, nunca simular. |
 | Script `postinstall` de pacote desconhecido | `alto` | `postinstall`/`preinstall` em dependência | Pacote conhecido e auditado. |
+| Instalação não reproduzível | `medio` | CI instala sem lockfile congelado (`npm install` em vez de `npm ci`, `pnpm i` sem `--frozen-lockfile`), dois lockfiles na mesma raiz, ou script de dependência liberado em bloco | Lockfile único e congelado no CI; script de dependência bloqueado por padrão e liberado um a um (`onlyBuiltDependencies` no pnpm, `ignore-scripts` no npm). **Auditoria de CVE não pega pacote malicioso novo nem nome parecido** (`crossenv` x `cross-env`): dependência nova se revisa na mão, olhando dono, idade e manutenção. |
 | Sem MFA na conta de infra | fora do escopo de código | conta de GitHub, Vercel, Supabase, Stripe, Cloudflare | Nada. **Este é o ponto único de falha real: se a conta cai, nada que a auditoria achou importa.** Vai como próximo passo, não como achado. |
 
 ---
@@ -151,3 +168,7 @@ Corpo de conhecimento da dimensão A (segurança e abuso). Calibrado pra stack S
 - **Distinguir vulnerabilidade de melhoria.** As duas entram, com etiquetas diferentes.
 - **Confiança obrigatória.** `confirmado` só com evidência lida. Se falta abrir algo, é `plausivel` e diz o que falta verificar. A frase "parece plausível" está banida como veredito.
 - **Nada de teatro.** Sem "hackers podem destruir seu negócio". Consequência concreta neste app, ou nada.
+
+---
+
+**Enxerto de 2026-09-23.** A seção 0 e as linhas de SSRF, rate limit em memória, caminho derivado em operação destrutiva, saída de LLM como argumento, RAG sem partição e instalação não reproduzível foram destiladas de [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) `skills/security-and-hardening` (MIT, commit d1463fd) e reescritas nesta voz. As referências por stack em `referencias/externas/openai/` são de [openai/skills](https://github.com/openai/skills) `skills/.curated/security-best-practices` (Apache-2.0, commit 5c8f1e2), íntegras e com a licença junto. **Onde elas conflitam com este catálogo, o catálogo vence.**

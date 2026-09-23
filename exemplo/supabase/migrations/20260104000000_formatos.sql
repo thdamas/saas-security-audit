@@ -165,8 +165,6 @@ create table public.chamados (
 alter table public.chamados enable row level security;
 create policy "chamados_dono" on public.chamados
   for select to authenticated using (public.eh_dono());
-alter type "public"."fase" add value 'pausada';
-
 create or replace function public.chamados_em_aberto()
 returns bigint
 language sql
@@ -175,6 +173,16 @@ set search_path = ''
 as $$
   -- status <> 'ativa' ficou de fora de propósito
   select count(*) from public.chamados where fase <> 'fechada' and papel <> 'cancelada';
+$$;
+alter type "public"."fase" add value 'pausada';
+
+create or replace function public.chamados_fechados_depois()
+returns bigint
+language sql
+stable
+set search_path = ''
+as $$
+  select count(*) from public.chamados where fase <> 'aberta';
 $$;
 
 grant select (id, email), update (papel) on public.convites_equipe to authenticated;
@@ -192,7 +200,8 @@ revoke execute on function public.contar_tarefas_do_membro() from public, anon;
 
 create table public.etapas (
   id bigserial primary key,
-  fase text not null
+  fase text not null,
+  status text
 );
 alter table public.etapas enable row level security;
 create policy "etapas_dono" on public.etapas
@@ -204,7 +213,7 @@ language sql
 stable
 set search_path = ''
 as $$
-  select count(*) from public.etapas where fase <> 'rascunho';
+  select count(*) from public.etapas where status <> 'cancelada';
 $$;
 
 create or replace function public.is_gestor()
@@ -273,3 +282,88 @@ create policy "anotacoes_select_autor" on public.anotacoes
   for select to authenticated using (autor_id = auth.uid());
 create policy "anotacoes_insert_livre" on public.anotacoes
   for insert to authenticated;
+
+alter type public.status_assinatura add value 'pausada';
+
+create or replace function public.assinaturas_ativas_v()
+returns bigint
+language sql
+stable
+set search_path = ''
+as $$
+  select count(*) from public.assinaturas where status in ('ativa');
+$$;
+
+create schema if not exists crm;
+create table crm.contatos (
+  id bigserial primary key,
+  dono uuid not null
+);
+alter table crm.contatos enable row level security;
+create policy "contatos_dono" on crm.contatos
+  for select to authenticated using (dono = auth.uid());
+create table crm.segredos (
+  id bigserial primary key,
+  valor text
+);
+grant usage on schema crm to anon, authenticated;
+create table crm.cofre (
+  id bigserial primary key,
+  valor text
+);
+revoke all on table crm.cofre from anon, authenticated;
+create schema if not exists interno;
+create table interno.fila (
+  id bigserial primary key,
+  carga jsonb
+);
+grant usage on schema interno to authenticated;
+
+-- Create Table Creation Function: comentario que o inventario nao pode ler como tabela
+-- create table rascunho (id int) foi a primeira versao, antes de virar particao
+create or replace function public.criar_particao(p_nome text)
+returns void
+language plpgsql
+set search_path = ''
+as $fn$
+begin
+  execute format('CREATE TABLE IF NOT EXISTS %I (id bigint)', p_nome);
+end;
+$fn$;
+
+create table public.lote_a (id bigserial primary key, organization_id uuid);
+create table public.lote_b (id bigserial primary key, organization_id uuid);
+do $$
+declare t text;
+begin
+  foreach t in array array['lote_a', 'lote_b']
+  loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('create policy lote_%s_org on public.%I for all using (organization_id is not null)', t, t);
+  end loop;
+end
+$$;
+
+grant all on all tables in schema public to anon;
+
+create table public.organizations (
+  id uuid primary key
+);
+alter table public.organizations enable row level security;
+create policy "organizations_membro" on public.organizations
+  for select to authenticated using (public.eh_dono());
+create table public.faturas_org (
+  id bigserial primary key,
+  org_id uuid references public.organizations(id) on delete cascade
+);
+alter table public.faturas_org enable row level security;
+create policy "faturas_org_dono" on public.faturas_org
+  for select to authenticated using (public.eh_dono());
+
+create index if not exists anotacoes_texto_idx on public.anotacoes (texto);
+
+create schema if not exists relatorios;
+create table relatorios.mensal (
+  id bigserial primary key,
+  total numeric
+);

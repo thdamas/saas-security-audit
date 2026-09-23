@@ -1,0 +1,3 @@
+[api]
+enabled = true
+schemas = ["public", "graphql_public", "crm", "relatorios"]

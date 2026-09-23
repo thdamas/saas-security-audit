@@ -45,6 +45,11 @@ frontend         = ["src/routes/**/*.tsx", "src/components/**/*.tsx"]
 config_deploy    = ["vercel.json", "netlify.toml", "wrangler.toml"]
 testes           = ["src/**/*.test.ts"]
 # Arquivos e pastas que o scanner NUNCA lê (ruído ou gerado).
+# Opcional. Manual de instalação e segurança: o scanner acusa policy citada que o SQL não cria.
+docs             = ["README.md", "INSTALL.md", "SECURITY.md"]
+# Opcional. Arquivos REAPLICADOS inteiros com o app no ar (baseline, seed). Lidos em ordem:
+# o GRANT que só é revogado mais adiante no mesmo arquivo abre uma janela.
+reaplicados      = []
 ignorar = ["node_modules", "dist", ".next", ".vercel", "routeTree.gen.ts", "__pycache__"]
 
 # ---------------------------------------------------------------------------
@@ -160,6 +165,9 @@ projeto_id = ""
 plano_banco = "desconhecido"          # free | pro | team | desconhecido
 plano_deploy = "desconhecido"         # hobby | pro
 migration_aplicada_a_mao = false      # true aumenta o peso de "sem backup"
+# Opcional. Esquemas que a API do Supabase publica. Sem isto, o scanner lê o [api] schemas do
+# supabase/config.toml do repositório e, na falta dele, assume public e graphql_public.
+# esquemas_expostos = ["public", "graphql_public"]
 
 [git]
 push_direto_na_main = false

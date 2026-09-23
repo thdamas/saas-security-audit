@@ -11,7 +11,7 @@ Read-only. It finds, proves and proposes. It never touches your code.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen.svg)](#requirements)
-[![Self-test](https://img.shields.io/badge/self--test-31%20detectors-brightgreen.svg)](#quick-start)
+[![Self-test](https://img.shields.io/badge/self--test-33%20detectors-brightgreen.svg)](#quick-start)
 
 ```
 $ python verificar.py          # real output, Portuguese; glosses added here
@@ -31,7 +31,7 @@ $ python verificar.py          # real output, Portuguese; glosses added here
   ok   exatamente um </script>
   ok   segredo do exemplo nao aparece inteiro no painel
   ok   zero requisicao externa (fonte, script, css)
-  ok   gate contou 20 bloqueadores (4 criticos + 16 altos)
+  ok   gate contou 24 bloqueadores (5 criticos + 19 altos)
 
 APROVADO: scanner, detectores, cobertura e painel funcionam nesta maquina.
 ```
@@ -75,6 +75,7 @@ That's **dimension B (correctness)**, with four lenses of its own. It is the par
 - **The scanner reads migrations**, so it sees what was *requested*, not what's in the database. That's what phase 1 (ground truth) is for.
 - **LLM findings can be wrong.** Hence the skeptic, the mandatory `file:line`, and a calibration gate after the very first batch.
 - **The tenancy and correctness detectors are heuristics, and their blind spots are written down.** They recognize role helpers and history tables by name, match enum comparisons by column name (not by table), miss an invite oracle whose e-mail parameter has another name, do not understand `revoke ... on all functions in schema`, and cannot read a SQL function whose body is a single-quoted string instead of `$$`. Each finding says what to confirm.
+- **Calibrated on real apps, still noisy.** The engine was run against four large open-source Supabase apps (hundreds of tables, over a thousand migrations) and a sample of its findings was judged by independent reviewers reading the code: after calibration it keeps every true finding in that sample and about 45% of what it raises is real. That is why the method has a skeptic phase: the scanner is a locator, not a verdict.
 - **Passing the gate is not a certification.** It's an informed verdict about what was examined, shipped with the list of what wasn't.
 
 > **Português:** [README.pt-BR.md](README.pt-BR.md).
@@ -120,7 +121,7 @@ python scanner.py --perfil exemplo/.claude/auditoria/perfil.toml --saida ./saida
 python painel.py --pasta ./saida/exemplo-assinatura/*-completa --abrir
 ```
 
-`verificar.py` checks 31 detectors (each with a clean case it must NOT flag), the measured inventory, the coverage proof and 5 properties of the dashboard. If it prints `APROVADO`, you're good.
+`verificar.py` checks 33 detectors (each with a clean case it must NOT flag, and every condition mutation-tested), the measured inventory, the coverage proof and 5 properties of the dashboard. If it prints `APROVADO`, you're good.
 
 ### On your own app
 

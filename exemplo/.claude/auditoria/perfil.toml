@@ -17,6 +17,7 @@ frontend         = ["src/routes/**/*.tsx", "src/components/**/*.tsx"]
 config_deploy    = ["vercel.json"]
 testes           = ["src/**/*.test.ts"]
 docs             = ["INSTALL.md", "README.md"]
+reaplicados      = ["supabase/baseline.sql"]
 ignorar = ["node_modules", "dist", ".vercel"]
 
 [[tipos_de_acesso]]
@@ -49,7 +50,7 @@ caminhos = ["webhook", "registrarPagamento"]
 campos_obrigatorios = ["provedor_payment_id", "pago_em"]
 
 [privilegio]
-service_role_permitido_em = ["**/*.server.ts", "**/routes/api.*.ts", "**/billing/*.functions.ts"]
+service_role_permitido_em = ["**/*.server.ts", "**/routes/api.*.ts", "**/billing/*.functions.ts", "**/edge/**"]
 nome_do_client_privilegiado = "supabaseAdmin"
 env_da_chave = "SUPABASE_SERVICE_ROLE_KEY"
 

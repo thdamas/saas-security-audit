@@ -59,7 +59,7 @@ python scanner.py --perfil exemplo/.claude/auditoria/perfil.toml --saida ./saida
 python painel.py --pasta ./saida/exemplo-assinatura/*-completa --abrir
 ```
 
-O `verificar.py` confere 31 detectores (cada um com um caso limpo que ele NÃO pode acusar), o inventário medido, a prova de cobertura e 5 propriedades do painel. Se ele imprime `APROVADO`, a ferramenta está funcionando.
+O `verificar.py` confere 33 detectores (cada um com um caso limpo que ele NÃO pode acusar, e cada condição testada por mutação), o inventário medido, a prova de cobertura e 5 propriedades do painel. Se ele imprime `APROVADO`, a ferramenta está funcionando.
 
 ### No seu app
 
@@ -117,6 +117,7 @@ Auditar produz o documento mais sensível que o projeto vai ter. As regras aqui 
 - **O scanner lê migrations**, então ele vê o que foi pedido, não o que está no banco. Por isso a fase 1 existe.
 - **Achado de LLM pode errar.** É por isso que existe o cético, o `arquivo:linha` obrigatório e o portão de calibragem.
 - **Os detectores de escopo e corretude são heurísticos, e os pontos cegos estão escritos.** Reconhecem função de papel e tabela de histórico pelo nome, amarram a comparação de enum pelo nome da coluna (não pela tabela), não pegam o oráculo de convite cujo parâmetro de e-mail tem outro nome não entendem `revoke ... on all functions in schema` e não leem função SQL cujo corpo é string entre aspas simples em vez de `$$`. Cada achado diz o que conferir.
+- **Calibrado em app real, e ainda com ruído.** O motor rodou em quatro apps grandes de código aberto em Supabase (centenas de tabelas, mais de mil migrations) e uma amostra dos achados foi julgada por revisores independentes lendo o código: depois da calibragem ele mantém todos os achados verdadeiros da amostra e cerca de 45% do que acusa é real. É por isso que o método tem a fase dos céticos: o scanner é localizador, não veredito.
 - Passar no gate **não é certificado de nada**. É um veredito informado sobre o que foi olhado, com a lista do que não foi.
 
 ## Estrutura

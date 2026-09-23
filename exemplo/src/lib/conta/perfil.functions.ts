@@ -20,6 +20,9 @@ export const estadoAcesso = createServerFn({ method: 'GET' })
 export const buscarUsuarios = createServerFn({ method: 'POST' })
   .middleware([requireUser])
   .handler(async ({ data: termo }) => {
+    // const velho = await supabase.rpc('rpc_comentada')
     const { data } = await supabase.from('profiles').select('id,nome').or(`nome.ilike.%${termo}%`)
+    await supabase.from('profiles').select('id').or('tipo_acesso.eq.pagante')
+    await supabase.from('profiles').select('id').filter('nome', 'eq', termo)
     return data
   })

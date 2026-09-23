@@ -100,8 +100,8 @@ PADROES_FRONT = [
 # Filtro cru do PostgREST: aceita STRING, não parâmetro. Input do usuário
 # concatenado aqui é injetável de verdade (diferente de .eq(), que parametriza).
 PADROES_FILTRO_CRU = [
-    ("filtro .or() cru", re.compile(r"\.or\s*\(")),
-    ("filtro .filter() cru", re.compile(r"\.filter\s*\(\s*[\"'`]")),
+    ("filtro .or() cru", re.compile(r"\.or\s*\(\s*(?:`[^`]*\$\{|[\"'][^\"']*[\"']\s*\+|[A-Za-z_$][\w$.]*\s*\+)")),
+    ("filtro .filter() cru", re.compile(r"\.filter\s*\([^)]*?`[^`]*\$\{")),
     ("ilike com template", re.compile(r"\.i?like\s*\(\s*[^,]+,\s*`")),
 ]
 
@@ -181,13 +181,25 @@ def ler(p: Path) -> str:
 # INVENTÁRIO DO BANCO (parseia as migrations)
 # ---------------------------------------------------------------------------
 
-# Esquema opcional, com ou sem aspas: `x`, `public.x`, `"public"."x"`. É o formato que o
-# `supabase db diff` e o pg_dump escrevem, e sem ele a tabela inteira some do inventário.
-SQ = r"(?:\"?(?:public|storage|auth)\"?\s*\.\s*)?\"?"
+# Esquema opcional, com ou sem aspas: `x`, `public.x`, `"public"."x"`, `crm.x`. É o formato
+# que o `supabase db diff` e o pg_dump escrevem, e app grande guarda tabela fora do public.
+SQ = r"(?:\"?[a-z_][a-z0-9_]*\"?\s*\.\s*)?\"?"
 NOME_POLICY = r"(?:\"([^\"]+)\"|'([^']+)'|([^\s\"';]+))"
 
 RE_CREATE_TABLE = re.compile(
-    r"create\s+table\s+(?:if\s+not\s+exists\s+)?" + SQ + r"([a-z0-9_]+)", re.I)
+    r"create\s+(?:(?:temp|temporary|unlogged)\s+)?table\s+(?:if\s+not\s+exists\s+)?"
+    r"(?:\"?([a-z_][a-z0-9_]*)\"?\s*\.\s*)?\"?" + r"([a-z0-9_]+)\"?(?=\s*\(|\s+as\b|\s+partition\b)", re.I)
+RE_DROP_TABLE = re.compile(r"\bdrop\s+table\s+(?:if\s+exists\s+)?([^;]+?)(?:\s+cascade|\s+restrict)?\s*;", re.I)
+RE_DROP_VIEW = re.compile(
+    r"\bdrop\s+(?:materialized\s+)?view\s+(?:if\s+exists\s+)?([^;]+?)(?:\s+cascade|\s+restrict)?\s*;", re.I)
+RE_DROP_SCHEMA = re.compile(r"\bdrop\s+schema\s+(?:if\s+exists\s+)?\"?([a-z_][a-z0-9_]*)\"?[^;]*\bcascade\b", re.I)
+RE_RENAME_TABLE = re.compile(
+    r"alter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(?:\"?[a-z_][a-z0-9_]*\"?\s*\.\s*)?\"?([a-z0-9_]+)\"?"
+    r"\s+rename\s+to\s+\"?([a-z0-9_]+)", re.I)
+RE_GRANT_EM_MASSA = re.compile(
+    r"grant\s+[a-z, ]+?\s+on\s+all\s+(tables|sequences|functions|routines)\s+in\s+schema\s+"
+    r"\"?([a-z_][a-z0-9_]*)\"?\s+to\s+([a-z_, \"]+)", re.I)
+OBJETOS_EM_MASSA = {"tables", "sequences", "functions", "routines", "types", "schemas"}
 RE_RLS_ON = re.compile(
     r"alter\s+table\s+(?:only\s+)?(?:if\s+exists\s+)?" + SQ + r"([a-z0-9_]+)\"?\s+enable\s+row\s+level\s+security",
     re.I)
@@ -265,6 +277,31 @@ def _statement(texto: str, inicio: int, teto: int = 4000) -> str:
     return janela
 
 
+def _esquemas_expostos(perfil: dict) -> set[str]:
+    """Esquemas que a API do Supabase publica. Tabela fora deles não é alcançável pela chave anon.
+
+    Ordem: o perfil declara (`[plataforma] esquemas_expostos`); senão, o `[api] schemas` do
+    `supabase/config.toml` do repositório; senão, o padrão do Supabase.
+    """
+    import tomllib
+
+    declarado = perfil.get("plataforma", {}).get("esquemas_expostos")
+    if declarado:
+        return {s.lower() for s in declarado}
+    raiz: Path = perfil["_raiz"]
+    for cfg in sorted(raiz.glob("**/supabase/config.toml")):
+        if "node_modules" in cfg.parts:
+            continue
+        try:
+            dados = tomllib.loads(cfg.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        esquemas = dados.get("api", {}).get("schemas")
+        if esquemas:
+            return {s.lower() for s in esquemas}
+    return {"public", "graphql_public"}
+
+
 def inventario_banco(perfil: dict) -> dict:
     arquivos = coletar(perfil, "migrations")
     tabelas: dict[str, str] = {}
@@ -279,38 +316,76 @@ def inventario_banco(perfil: dict) -> dict:
     definer_sem_searchpath: list[dict] = []
     tem_storage_bucket = False
 
-    for arq in arquivos:
-        texto = ler(arq)
+    esquema_da_tabela: dict[str, str] = {}
+    policy_dinamica: set[str] = set()
+    grants_em_massa: list[dict] = []
+    eventos: list[tuple] = []
+    for i, arq in enumerate(arquivos):
+        texto = _sem_comentario(ler(arq))
         nome_arq = rel(perfil, arq)
         linhas_por_pos = _mapa_linhas(texto)
 
         for m in RE_CREATE_TABLE.finditer(texto):
-            tabelas.setdefault(m.group(1).lower(), nome_arq)
+            eventos.append(((i, m.start()), "tab_create",
+                            (m.group(2).lower(), (m.group(1) or "public").lower(), nome_arq)))
+        for m in RE_DROP_TABLE.finditer(texto):
+            nomes = [re.sub(r"^.*\.", "", n.strip().strip('"')).strip('"').lower()
+                     for n in re.split(r",", m.group(1)) if n.strip()]
+            eventos.append(((i, m.start()), "tab_drop", nomes))
+        for m in RE_RENAME_TABLE.finditer(texto):
+            eventos.append(((i, m.start()), "tab_rename", (m.group(1).lower(), m.group(2).lower())))
+        for m in RE_DROP_SCHEMA.finditer(texto):
+            eventos.append(((i, m.start()), "schema_drop", m.group(1).lower()))
+        for m in RE_DROP_VIEW.finditer(texto):
+            nomes = [re.sub(r"^.*\.", "", n.strip().strip('"')).strip('"').lower()
+                     for n in re.split(r",", m.group(1)) if n.strip()]
+            eventos.append(((i, m.start()), "view_drop", nomes))
+        # RLS ligada em laço: `foreach t in array[...] loop execute format('alter table %I
+        # enable row level security', t)`. Sem isto, tabela protegida vira "tabela sem RLS".
+        for m in re.finditer(r"format\s*\(\s*'[^']*enable\s+row\s+level\s+security[^']*'", texto, re.I):
+            ini = max(texto.rfind("do $", 0, m.start()), texto.rfind("do\n$", 0, m.start()), 0)
+            fim = texto.find("end loop", m.end())
+            janela = texto[ini:fim if fim != -1 else m.end() + 2000]
+            nomes = {n.lower() for lista in re.findall(r"array\s*\[([^\]]*)\]", janela, re.I)
+                     for n in re.findall(r"'([a-z0-9_]+)'", lista, re.I)}
+            rls_on.update(nomes)
+            if re.search(r"format\s*\(\s*'[^']*create\s+policy", janela, re.I):
+                policy_dinamica.update(nomes)
+        for m in RE_GRANT_EM_MASSA.finditer(texto):
+            grants_em_massa.append({
+                "objeto": m.group(1).lower(), "esquema": m.group(2).lower(),
+                "para": [r.strip().strip('"').lower() for r in m.group(3).split(",") if r.strip()],
+                "arquivo": nome_arq, "linha": linhas_por_pos(m.start()),
+            })
         for m in RE_RLS_ON.finditer(texto):
-            rls_on.add(m.group(1).lower())
+            eventos.append(((i, m.start()), "rls_on", m.group(1).lower()))
         for m in RE_POLICY.finditer(texto):
-            trecho = _statement(texto, m.start())
+            if texto[m.end():m.end() + 1] in (".", "%") or "%" in (m.group(3) or ""):
+                continue
+            # O que vem DEPOIS do nome da tabela: o nome da policy pode conter "for all".
+            resto = _statement(texto, m.end())
             nome_pol, tabela_pol = _nome_e_tabela(m)
-            policies.append({
+            eventos.append(((i, m.start()), "pol_create", {
                 "nome": nome_pol,
                 "tabela": tabela_pol,
                 "arquivo": nome_arq,
                 "linha": linhas_por_pos(m.start()),
-                "comando": _comando_da_policy(trecho),
-                "para": _roles_da_policy(trecho),
-                "restritiva": bool(re.search(r"\bas\s+restrictive\b", trecho, re.I)),
-                "tem_using": bool(re.search(r"\busing\s*\(", trecho, re.I)),
-                "tem_with_check": bool(re.search(r"\bwith\s+check\s*\(", trecho, re.I)),
-                "tautologia": bool(re.search(r"(using|with\s+check)\s*\(\s*true\s*\)", trecho, re.I)),
-            })
+                "comando": _comando_da_policy(resto),
+                "para": _roles_da_policy(resto),
+                "restritiva": bool(re.search(r"\bas\s+restrictive\b", resto, re.I)),
+                "tem_using": bool(re.search(r"\busing\s*\(", resto, re.I)),
+                "tem_with_check": bool(re.search(r"\bwith\s+check\s*\(", resto, re.I)),
+                "tautologia": bool(re.search(r"(using|with\s+check)\s*\(\s*true\s*\)", resto, re.I)),
+            }))
         for m in RE_DROP_POLICY.finditer(texto):
             nome_pol, tabela_pol = _nome_e_tabela(m)
             drops.append({"nome": nome_pol, "tabela": tabela_pol, "arquivo": nome_arq})
+            eventos.append(((i, m.start()), "pol_drop", (nome_pol, tabela_pol)))
         for m in RE_FUNC.finditer(texto):
             nome = m.group(1).lower()
             corpo = _corpo_da_funcao(texto, m.start())
             definer = bool(re.search(r"security\s+definer", corpo, re.I))
-            searchpath = bool(re.search(r"set\s+search_path", corpo, re.I))
+            searchpath = bool(re.search(r"set\s+\"?search_path\"?", corpo, re.I))
             reg = funcoes.setdefault(nome, {
                 "nome": nome, "definer": False, "search_path": False,
                 "arquivos": [], "linha": linhas_por_pos(m.start()),
@@ -325,18 +400,20 @@ def inventario_banco(perfil: dict) -> dict:
             trecho = _statement(texto, m.start())
             # Em Postgres 15+ a view roda com o privilégio do DONO (definer) a menos que
             # declare `security_invoker = true`. Ausência da cláusula é definer.
-            invoker = bool(re.search(r"security_invoker\s*=\s*(true|on)", trecho, re.I))
-            views.append({
+            invoker = bool(re.search(r"security_invoker\s*(?:=\s*(?:true|on)\s*)?[,)]", trecho, re.I))
+            eventos.append(((i, m.start()), "view_create", {
                 "nome": m.group(1).lower(), "arquivo": nome_arq,
                 "linha": linhas_por_pos(m.start()),
                 "definer": not invoker,
-            })
+            }))
         for m in RE_TRIGGER.finditer(texto):
             triggers.append({"nome": m.group(1).lower(), "arquivo": nome_arq})
         for m in RE_ENUM.finditer(texto):
             valores = re.findall(r"'([^']+)'", m.group(2))
             enums[m.group(1).lower()] = valores
         for m in RE_GRANT.finditer(texto):
+            if m.group(2).lower() in OBJETOS_EM_MASSA:
+                continue
             grants.append({
                 "privilegio": m.group(1).strip(), "tabela": m.group(2).lower(),
                 "para": [r.strip() for r in m.group(3).split(",")],
@@ -344,6 +421,55 @@ def inventario_banco(perfil: dict) -> dict:
             })
         if RE_BUCKET.search(texto):
             tem_storage_bucket = True
+
+    dinamicas = set(rls_on)
+    pol_final: dict[tuple[str, str], dict] = {}
+    views_final: dict[str, dict] = {}
+    for _, tipo, dado in sorted(eventos, key=lambda e: e[0]):
+        if tipo == "tab_create":
+            nome, esq, arq_ = dado
+            tabelas.setdefault(nome, arq_)
+            esquema_da_tabela.setdefault(nome, esq)
+        elif tipo == "tab_drop":
+            for n in dado:
+                tabelas.pop(n, None)
+                esquema_da_tabela.pop(n, None)
+                rls_on.discard(n)
+                for k in [k for k in pol_final if k[0] == n]:
+                    pol_final.pop(k)
+        elif tipo == "tab_rename":
+            velho, novo = dado
+            if velho in tabelas:
+                tabelas[novo] = tabelas.pop(velho)
+                esquema_da_tabela[novo] = esquema_da_tabela.pop(velho, "public")
+            if velho in rls_on:
+                rls_on.discard(velho)
+                rls_on.add(novo)
+            for k in [k for k in pol_final if k[0] == velho]:
+                p = pol_final.pop(k)
+                p["tabela"] = novo
+                pol_final[(novo, k[1])] = p
+        elif tipo == "schema_drop":
+            for n in [n for n, e in esquema_da_tabela.items() if e == dado]:
+                tabelas.pop(n, None)
+                esquema_da_tabela.pop(n, None)
+                rls_on.discard(n)
+                for k in [k for k in pol_final if k[0] == n]:
+                    pol_final.pop(k)
+        elif tipo == "rls_on":
+            rls_on.add(dado)
+        elif tipo == "pol_create":
+            pol_final[(dado["tabela"], dado["nome"])] = dado
+        elif tipo == "pol_drop":
+            pol_final.pop((dado[1], dado[0]), None)
+        elif tipo == "view_create":
+            views_final[dado["nome"]] = dado
+        elif tipo == "view_drop":
+            for n in dado:
+                views_final.pop(n, None)
+    rls_on |= dinamicas
+    policies = list(pol_final.values())
+    views = list(views_final.values())
 
     for f in funcoes.values():
         if f["definer"] and not f["search_path"]:
@@ -376,13 +502,34 @@ def inventario_banco(perfil: dict) -> dict:
         or (p["comando"] in ("update", "all") and not p["tem_with_check"] and not p["tem_using"])
     ]
 
-    tabelas_sem_rls = sorted(set(tabelas) - rls_on)
+    # Tabela sem RLS só é aberta se alguém de fora tem permissão nela. Esquema exposto que
+    # não é o public não ganha nada por padrão no Supabase: precisa de `grant usage` pra anon
+    # ou authenticated. E tabela revogada dos dois está fechada mesmo sem RLS.
+    expostos = _esquemas_expostos(perfil)
+    tudo = "\n".join(_sem_comentario(ler(a)) for a in arquivos)
+    com_uso = {"public"} | {
+        m.group(1).lower() for m in re.finditer(
+            r"grant\s+usage\s+on\s+schema\s+\"?([a-z_][a-z0-9_]*)\"?\s+to\s+([^;]+)", tudo, re.I)
+        if re.search(r"\b(anon|authenticated|public)\b", m.group(2), re.I)}
+    revogadas: dict[str, set[str]] = {}
+    for m in re.finditer(
+            r"revoke\s+[a-z, ]+?\s+on\s+(?:table\s+)?" + SQ + r"([a-z0-9_]+)\"?\s+from\s+([^;]+)", tudo, re.I):
+        revogadas.setdefault(m.group(1).lower(), set()).update(
+            r.strip().strip('"').lower() for r in m.group(2).split(","))
+    fechada = lambda t: {"anon", "authenticated"} <= revogadas.get(t, set())
+    tabelas_sem_rls = sorted(t for t in set(tabelas) - rls_on
+                             if esquema_da_tabela.get(t, "public") in expostos
+                             and esquema_da_tabela.get(t, "public") in com_uso
+                             and not fechada(t))
     tabelas_com_rls_sem_policy = sorted(
-        (rls_on & set(tabelas)) - {p["tabela"] for p in policies})
+        (rls_on & set(tabelas)) - {p["tabela"] for p in policies} - policy_dinamica)
 
     return {
         "arquivos_migration": len(arquivos),
         "tabelas": dict(sorted(tabelas.items())),
+        "esquema_da_tabela": dict(sorted(esquema_da_tabela.items())),
+        "esquemas_expostos": sorted(expostos),
+        "grants_em_massa": grants_em_massa,
         "total_tabelas": len(tabelas),
         "rls_habilitado": sorted(rls_on),
         "total_rls": len(rls_on),
@@ -415,10 +562,10 @@ def _comando_da_policy(trecho: str) -> str:
 
 
 def _roles_da_policy(trecho: str) -> list[str]:
-    m = re.search(r"\bto\s+([a-z_, ]+?)(?:\s+using|\s+with|\s*;|\n)", trecho, re.I)
+    m = re.search(r"\bto\s+([a-z_, \"]+?)(?:\s+using|\s+with|\s*;|\n)", trecho, re.I)
     if not m:
         return []
-    return [r.strip().lower() for r in m.group(1).split(",") if r.strip()]
+    return [r.strip().strip('"').lower() for r in m.group(1).split(",") if r.strip()]
 
 
 def _mapa_linhas(texto: str):
@@ -448,7 +595,49 @@ RE_MIDDLEWARE_USO = re.compile(r"\.middleware\s*\(\s*\[([^\]]*)\]", re.S)
 RE_RPC = re.compile(r"\.rpc\s*\(\s*[\"']([a-z0-9_]+)[\"']", re.I)
 
 
+RE_ARQUIVO_DE_TESTE = re.compile(r"(\.test\.|\.spec\.|/__tests__/|/tests?/|/__mocks__/)", re.I)
+# Rota que confere quem chama por sessão ou por guarda própria do projeto
+# (`requireRole`, `requireAuth`, `withAuth`), e não por header ou assinatura.
+RE_GUARDA_DE_ROTA = re.compile(
+    r"\b(?:getUser|getSession|getServerSession|currentUser)\s*\(|\bauth\s*\(\s*\)|"
+    r"\b(?:require|authenticate|authorize|autoriza|exige|resolveAuth|withAuth)[A-Za-z]*\s*\(|"
+    r"\bverify(?:Auth|Token|Signature|Session|User|Jwt|Webhook|Request|Api|Cron)[A-Za-z]*\s*\(")
+
+
+def _sem_comentario_js(texto: str) -> str:
+    """Troca comentário `//` e `/* */` por espaço, respeitando string e template. Posição igual."""
+    saida, i, n, aspa = list(texto), 0, len(texto), None
+    while i < n:
+        c = texto[i]
+        if aspa:
+            if c == "\\":
+                i += 2
+                continue
+            if c == aspa:
+                aspa = None
+        elif c in "'\"`":
+            aspa = c
+        elif texto.startswith("//", i):
+            fim = texto.find("\n", i)
+            fim = n if fim == -1 else fim
+            for j in range(i, fim):
+                saida[j] = " "
+            i = fim
+            continue
+        elif texto.startswith("/*", i):
+            fim = texto.find("*/", i + 2)
+            fim = n if fim == -1 else fim + 2
+            for j in range(i, fim):
+                if saida[j] != "\n":
+                    saida[j] = " "
+            i = fim
+            continue
+        i += 1
+    return "".join(saida)
+
+
 def inventario_codigo(perfil: dict) -> dict:
+    import fnmatch
     priv = perfil.get("privilegio", {})
     nome_admin = priv.get("nome_do_client_privilegiado", "supabaseAdmin")
     re_admin = re.compile(re.escape(nome_admin))
@@ -489,6 +678,7 @@ def inventario_codigo(perfil: dict) -> dict:
             "arquivo": rel(perfil, arq),
             "usa_client_privilegiado": bool(re_admin.search(texto)),
             "checa_bearer": bool(re.search(r"authorization|bearer", texto, re.I)),
+            "checa_sessao": bool(RE_GUARDA_DE_ROTA.search(texto)),
             "verifica_assinatura": bool(re.search(
                 r"constructEvent|verifyHeader|createHmac|timingSafeEqual|svix", texto, re.I)),
             "linhas": texto.count("\n") + 1,
@@ -509,11 +699,13 @@ def inventario_codigo(perfil: dict) -> dict:
     sitios_admin: list[dict] = []
     for chave in ("server_functions", "rotas_api", "middlewares", "frontend"):
         for arq in coletar(perfil, chave):
-            texto = ler(arq)
+            if RE_ARQUIVO_DE_TESTE.search(arq.as_posix()):
+                continue
+            texto = _sem_comentario_js(ler(arq))
             if not re_admin.search(texto):
                 continue
             r = rel(perfil, arq)
-            ok = any(Path(r).match(pat) for pat in permitido)
+            ok = any(Path(r).match(pat) or fnmatch.fnmatch(r, pat) for pat in permitido)
             sitios_admin.append({
                 "arquivo": r, "categoria": chave, "permitido_pelo_perfil": ok,
                 "import_lazy": bool(re.search(r"await\s+import\s*\(", texto)),
@@ -529,7 +721,7 @@ def inventario_codigo(perfil: dict) -> dict:
     rpcs_chamadas: set[str] = set()
     for chave in ("server_functions", "rotas_api", "middlewares", "frontend"):
         for arq in coletar(perfil, chave):
-            for m in RE_RPC.finditer(ler(arq)):
+            for m in RE_RPC.finditer(_sem_comentario_js(ler(arq))):
                 rpcs_chamadas.add(m.group(1).lower())
 
     testes = [rel(perfil, p) for p in coletar(perfil, "testes")]
@@ -551,6 +743,17 @@ def inventario_codigo(perfil: dict) -> dict:
     }
 
 
+def _jwt_demo_do_supabase(jwt: str) -> bool:
+    """A chave de demonstração do Supabase CLI (`iss: supabase-demo`) é pública por desenho."""
+    import base64
+    try:
+        meio = jwt.split(".")[1]
+        dado = base64.urlsafe_b64decode(meio + "=" * (-len(meio) % 4)).decode("utf-8", "replace")
+    except Exception:
+        return False
+    return "supabase-demo" in dado
+
+
 def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
     """Achados que NÃO precisam de julgamento. Cada um tem arquivo e linha."""
     achados: list[dict] = []
@@ -562,9 +765,11 @@ def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
             "dimensao": dimensao, "origem": "mecanico",
         })
 
-    # 1. Tabela sem RLS
+    # 1. Tabela sem RLS, só em esquema que a API expõe
+    esquemas = banco.get("esquema_da_tabela", {})
     for t in banco["tabelas_sem_rls"]:
-        add("rls-ausente", "critico", f"Tabela `{t}` sem RLS habilitado",
+        qual = t if esquemas.get(t, "public") == "public" else f"{esquemas[t]}.{t}"
+        add("rls-ausente", "critico", f"Tabela `{qual}` sem RLS habilitado",
             banco["tabelas"].get(t, "?"),
             detalhe="Sem RLS, qualquer portador da anon key lê e escreve a tabela inteira.")
 
@@ -627,6 +832,18 @@ def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
             g["arquivo"], g["linha"],
             detalhe="Grant direto pro papel anônimo depende inteiramente de o RLS estar certo.")
 
+    # 7b. Grant em massa pro visitante: é o padrão do Supabase, então sozinho não é
+    # brecha. Vira brecha somado a tabela sem RLS no mesmo esquema, e é por isso que aparece.
+    for g in banco.get("grants_em_massa", []):
+        if "anon" in g["para"] or "public" in g["para"]:
+            add("grant-anon-em-massa", "medio",
+                f"GRANT em todas as {g['objeto']} do esquema `{g['esquema']}` para o visitante",
+                g["arquivo"], g["linha"],
+                detalhe="É o padrão do Supabase e, sozinho, não expõe nada: quem barra é a RLS. "
+                        "Por isso qualquer tabela deste esquema criada sem RLS fica aberta pra "
+                        "chave anon no mesmo instante. Conferir junto com os achados de RLS "
+                        "ausente, e revogar de anon nos esquemas que a API não precisa servir.")
+
     # 8. Policy empilhada (permissivas são OR)
     for e in banco["policies_empilhadas"]:
         add("policy-empilhada", "medio",
@@ -671,9 +888,9 @@ def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
 
     # 11. Rota de API sem verificação aparente
     for r in codigo["rotas_api"]:
-        if not r["checa_bearer"] and not r["verifica_assinatura"]:
+        if not r["checa_bearer"] and not r["verifica_assinatura"] and not r.get("checa_sessao"):
             add("rota-api-sem-verificacao", "alto",
-                f"Rota `{Path(r['arquivo']).name}` sem bearer nem verificação de assinatura",
+                f"Rota `{Path(r['arquivo']).name}` sem bearer, sessão nem verificação de assinatura",
                 r["arquivo"],
                 detalhe="Rota de API alcançável sem login e sem segredo. Se ela escreve ou "
                         "revela dado, é porta aberta. Se é pública por desenho (descadastro, "
@@ -692,13 +909,18 @@ def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
                 rel(perfil, cfg), detalhe="Faltando: " + ", ".join(faltando)
                 + ". Subir a CSP primeiro em Report-Only pra mapear violação sem quebrar a tela.")
 
-    # 13. Segredo aparente no código (NUNCA gravamos o valor)
+    # 13. Segredo aparente no código (NUNCA gravamos o valor). Arquivo de teste fica de
+    # fora: `postgres://user:senha@localhost` de fixture não é credencial de ninguém.
     for chave in ("server_functions", "rotas_api", "middlewares", "frontend"):
         for arq in coletar(perfil, chave):
+            if RE_ARQUIVO_DE_TESTE.search(arq.as_posix()):
+                continue
             texto = ler(arq)
             linha_de = _mapa_linhas(texto)
             for tipo, rx in PADROES_SEGREDO:
                 for m in rx.finditer(texto):
+                    if tipo.startswith("JWT") and _jwt_demo_do_supabase(m.group(0)):
+                        continue
                     add("segredo-hardcoded", "critico",
                         f"Possível {tipo} literal no código", rel(perfil, arq),
                         linha_de(m.start()),
@@ -709,10 +931,14 @@ def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
     # 14. Padrões de front (localizador, o agente julga)
     front_hits: list[dict] = []
     for arq in coletar(perfil, "frontend"):
-        texto = ler(arq)
+        texto = _sem_comentario_js(ler(arq))
         linha_de = _mapa_linhas(texto)
         for tipo, rx in PADROES_FRONT:
             for m in rx.finditer(texto):
+                # saída que passa por sanitizador na mesma linha não é render cru
+                linha_toda = texto[texto.rfind("\n", 0, m.start()) + 1:texto.find("\n", m.end())]
+                if re.search(r"DOMPurify|sanitize|safeJson|escapeHtml|xss\(", linha_toda, re.I):
+                    continue
                 front_hits.append({"tipo": tipo, "arquivo": rel(perfil, arq),
                                    "linha": linha_de(m.start())})
     for h in front_hits:
@@ -729,6 +955,7 @@ def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
         for arq in coletar(perfil, chave):
             texto = ler(arq)
             linha_de = _mapa_linhas(texto)
+            texto = _sem_comentario_js(texto)
             for tipo, rx in PADROES_FILTRO_CRU:
                 for m in rx.finditer(texto):
                     add("filtro-cru-postgrest", "medio",
@@ -801,6 +1028,12 @@ RE_PALAVRA_PAPEL = re.compile(r"\b(role|roles|papel|papeis)\b", re.I)
 RE_LITERAL_SQL = re.compile(r"'(?:[^']|'')*'")
 RE_REF_TABELA = re.compile(r"\b(?:from|join)\s+" + r"(?:\"?(?:public|storage|auth)\"?\s*\.\s*)?\"?" + r"([a-z0-9_]+)", re.I)
 RE_SUFIXO_NAO_SENSIVEL = re.compile(r"_(count|qtd|total|type|tipo|id|at|em|expires|expira|hash_alg)$", re.I)
+# Apagar a organização inteira leva o histórico junto por desenho: é o desmonte do cliente,
+# e não o dado sumindo por baixo de quem ainda usa o sistema.
+RAIZES_DE_INQUILINO = {
+    "organizations", "organization", "orgs", "org", "tenants", "tenant", "workspaces",
+    "workspace", "companies", "company", "accounts", "account", "teams", "team",
+}
 TOKENS_NAO_HISTORICO = {"avisos", "aviso", "notices", "notifications", "notificacoes", "alertas", "alerts", "push"}
 RE_FLAG_DESATIVACAO = re.compile(
     r"^(active|is_active|ativo|desativado|disabled|deleted_at|excluido_em|archived_at)$", re.I)
@@ -918,6 +1151,19 @@ def _papeis_do_comando(trecho: str, palavra: str) -> set[str]:
     return {r.strip().strip('"').lower() for r in m.group(1).split(",") if r.strip()}
 
 
+def _funcoes_do_comando(st: str) -> list[str]:
+    """Todas as funções de um GRANT ou REVOKE `on function a(), b()`, não só a primeira."""
+    m = re.search(r"\bon\s+function\s+(.+?)\s+(?:from|to)\s", st, re.I | re.S)
+    if not m:
+        return []
+    nomes = []
+    for item in _partes_de_topo(m.group(1)):
+        n = re.match(SQ + r"([a-z0-9_]+)", item.strip(), re.I)
+        if n:
+            nomes.append(n.group(1).lower())
+    return nomes
+
+
 def _alcanca_anon(papeis) -> bool:
     """Policy sem TO vale para PUBLIC, e PUBLIC inclui anon."""
     return not papeis or "anon" in papeis or "public" in papeis
@@ -968,6 +1214,7 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
     # Estado final de EXECUTE por função, na ordem em que os comandos aparecem: um GRANT
     # posterior reabre o que um REVOKE anterior fechou.
     revogado: dict[str, set[str]] = {}
+    explicito: dict[str, set[str]] = {}
     for nome_arq, texto in limpos:
         for m in RE_ALTER_TABELA.finditer(texto):
             t = tabelas.get(m.group(1).lower())
@@ -985,14 +1232,16 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
                 t["fks"].append((fk.group(1).lower(), fk.group(2).lower(), od.group(1).lower() if od else ""))
         for m in RE_GRANT_OU_REVOKE.finditer(texto):
             st = _statement(texto, m.start())
-            alvo = RE_ALVO_FUNCAO.search(st)
-            if not alvo:
-                continue
-            estado = revogado.setdefault(alvo.group(1).lower(), set())
-            if m.group(1).lower() == "revoke":
-                estado.update(_papeis_do_comando(st, "from"))
-            else:
-                estado.difference_update(_papeis_do_comando(st, "to"))
+            for nome_f in _funcoes_do_comando(st):
+                estado = revogado.setdefault(nome_f, set())
+                if m.group(1).lower() == "revoke":
+                    papeis_r = _papeis_do_comando(st, "from")
+                    estado.update(papeis_r)
+                    explicito.get(nome_f, set()).difference_update(papeis_r)
+                else:
+                    papeis_g = _papeis_do_comando(st, "to")
+                    estado.difference_update(papeis_g)
+                    explicito.setdefault(nome_f, set()).update(papeis_g & {"anon", "authenticated"})
     rls_on = set(banco.get("rls_habilitado", []))
 
     def fechada_pra_visitante(nome: str) -> bool:
@@ -1050,16 +1299,21 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
     policies_por_tabela: dict[str, list[dict]] = {}
     for p in banco.get("policies", []):
         policies_por_tabela.setdefault(p["tabela"], []).append(p)
+    policies_finais = {(p["arquivo"], p["linha"]) for p in banco.get("policies", [])}
     for nome_arq, texto in limpos:
         linha_de = _mapa_linhas(texto)
         for m in RE_POLICY.finditer(texto):
+            # Só a policy que sobreviveu até o fim das migrations (sem drop depois).
+            if (nome_arq, linha_de(m.start())) not in policies_finais:
+                continue
             trecho = _statement(texto, m.start())
+            resto = trecho[m.end() - m.start():]
             nome, tabela = _nome_e_tabela(m)
-            comando = _comando_da_policy(trecho)
-            papeis = _roles_da_policy(trecho)
-            expr = _expressao_apos(trecho, r"with\s+check")
+            comando = _comando_da_policy(resto)
+            papeis = _roles_da_policy(resto)
+            expr = _expressao_apos(resto, r"with\s+check")
             if expr is None and comando in ("update", "all"):
-                expr = _expressao_apos(trecho, r"\busing")
+                expr = _expressao_apos(resto, r"\busing")
             t = tabelas.get(tabela)
             if comando in ("insert", "update", "all") and expr is not None and t:
                 expr = RE_UID_EMBRULHADO.sub("auth.uid()", re.sub(r"\s+", " ", expr)).lower()
@@ -1152,8 +1406,12 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
         info = funcoes.get(nome, {})
         if not f.get("definer") or info.get("trigger") or fechada_pra_visitante(nome):
             continue
-        add("definer-sem-revoke", "medio",
-            f"Função definer `{nome}` sem REVOKE EXECUTE de public e anon",
+        # GRANT explícito a quem é de fora é intenção de expor: sobe pra alto, porque aí a
+        # função precisa conferir por dentro quem chama, e o achado é conferir se confere.
+        de_fora_explicito = sorted(explicito.get(nome, set()))
+        add("definer-sem-revoke", "alto" if de_fora_explicito else "medio",
+            f"Função definer `{nome}` sem REVOKE EXECUTE de public e anon"
+            + (f" (GRANT explícito a {', '.join(de_fora_explicito)})" if de_fora_explicito else ""),
             info.get("arquivo", "?"), info.get("linha"),
             detalhe="Postgres concede EXECUTE a PUBLIC por padrão, e o Supabase concede também a "
                     "anon e authenticated por default privileges. Revogar só de um dos dois deixa "
@@ -1161,32 +1419,70 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
                     "function ... from public, anon` no mesmo arquivo que a cria. Limite: revoke "
                     "por schema inteiro (`on all functions in schema`) não é reconhecido aqui.")
 
-    # 9. Enum que cresceu, com comparação negativa sobre coluna daquele enum.
-    crescidos = sorted({m.group(1).lower() for _, t in limpos for m in RE_ADD_VALUE.finditer(t)})
-    for enum in crescidos:
+    # 9. Enum que cresceu, com comparação negativa sobre coluna daquele enum. Só vale a
+    # comparação escrita ANTES de o enum crescer (quem escreveu depois já conhecia o valor
+    # novo), ainda em vigor (função redefinida depois não conta) e cuja tabela na consulta
+    # tem mesmo a coluna daquele enum (duas tabelas com `status` de enums diferentes é comum).
+    defs_funcao = []
+    for i, (_, texto) in enumerate(limpos):
+        for m in RE_FUNC.finditer(texto):
+            corpo = _corpo_da_funcao(texto, m.start())
+            defs_funcao.append((m.group(1).lower(), i, m.start(), m.start() + len(corpo)))
+    ultima_def: dict[str, tuple[int, int]] = {}
+    for nome, i, ini, _ in defs_funcao:
+        ultima_def[nome] = max(ultima_def.get(nome, (-1, -1)), (i, ini))
+    crescimento: dict[str, tuple[int, int]] = {}
+    for i, (_, texto) in enumerate(limpos):
+        for m in RE_ADD_VALUE.finditer(texto):
+            e = m.group(1).lower()
+            crescimento[e] = max(crescimento.get(e, (-1, -1)), (i, m.start()))
+    re_origem = re.compile(
+        r"\b(?:from|join|update)\s+" + SQ + r"([a-z0-9_]+)\"?"
+        r"(?:\s+(?:as\s+)?(?!(?:where|on|join|set|left|right|inner|full|cross|group|order|limit|using)\b)"
+        r"([a-z_][a-z0-9_]*))?", re.I)
+    for enum in sorted(crescimento):
         valores = set(banco.get("enums", {}).get(enum, []))
-        tipo = re.compile(rf"^\"?(\w+)\"?\s+{SQ}{enum}\"?(?:\s|$)", re.I)
-        cols = sorted({mm.group(1).lower() for t in tabelas.values()
-                       for p in t["colunas"].values() if (mm := tipo.match(p))})
-        if not cols:
+        tipo = re.compile(rf"^\"?(\w+)\"?\s+{SQ}{enum}\"?(?:\s|$|\[)", re.I)
+        colunas_do_enum = {(tn, mm.group(1).lower()) for tn, t in tabelas.items()
+                           for p in t["colunas"].values() if (mm := tipo.match(p))}
+        if not colunas_do_enum or not valores:
             continue
-        alt = "|".join(cols)
-        re_neg = re.compile(rf"\b({alt})\"?\s*(?:<>|!=)\s*'([^']+)'|\b({alt})\"?\s+not\s+in\s*\(([^)]*)\)", re.I)
-        for nome_arq, texto in limpos:
+        alt = "|".join(sorted({c for _, c in colunas_do_enum}))
+        re_neg = re.compile(
+            rf"(?:\b(\w+)\.)?\"?\b({alt})\"?\s*(?:<>|!=)\s*'([^']+)'"
+            rf"|(?:\b(\w+)\.)?\"?\b({alt})\"?\s+not\s+in\s*\(([^)]*)\)", re.I)
+        for i, (nome_arq, texto) in enumerate(limpos):
             linha_de = _mapa_linhas(texto)
             for m in re_neg.finditer(texto):
-                col = (m.group(1) or m.group(3)).lower()
-                lit = m.group(2) if m.group(2) is not None else m.group(4).strip()
-                literais = [lit] if m.group(2) is not None else re.findall(r"'([^']+)'", lit)
+                if (i, m.start()) > crescimento[enum]:
+                    continue
+                dono = [d for d in defs_funcao if d[1] == i and d[2] <= m.start() < d[3]]
+                if dono and ultima_def[dono[-1][0]] != (i, dono[-1][2]):
+                    continue
+                negacao_simples = m.group(3) is not None
+                qual = (m.group(1) or m.group(4) or "").lower()
+                col = (m.group(2) or m.group(5)).lower()
+                lit = m.group(3) if negacao_simples else m.group(6).strip()
+                literais = [lit] if negacao_simples else re.findall(r"'([^']+)'", lit)
                 if not any(x in valores for x in literais):
                     continue
+                trecho = texto[texto.rfind(";", 0, m.start()) + 1:m.start()]
+                apelido: dict[str, str] = {}
+                for o in re_origem.finditer(trecho):
+                    apelido[o.group(1).lower()] = o.group(1).lower()
+                    if o.group(2):
+                        apelido[o.group(2).lower()] = o.group(1).lower()
+                candidatas = {apelido[qual]} if qual in apelido else set(apelido.values())
+                tabs = sorted(tn for tn in candidatas if (tn, col) in colunas_do_enum)
+                if not tabs:
+                    continue
+                expr = f"{tabs[0]}.{col} <> '{lit}'" if negacao_simples else f"{tabs[0]}.{col} not in ({lit})"
                 add("enum-cresceu-comparacao-negativa", "medio",
-                    f"`{col} <> '{lit}'` compara com o enum `{enum}`, que ganhou valor novo"
-                    if m.group(2) is not None else
-                    f"`{col} not in ({lit})` compara com o enum `{enum}`, que ganhou valor novo",
+                    f"`{expr}` foi escrita antes de o enum `{enum}` ganhar valor novo",
                     nome_arq, linha_de(m.start()), dimensao="corretude",
                     detalhe="`<> 'x'` e `not in (...)` passam a incluir todo valor que o enum "
-                            "ganhar depois. Um contador de abertos passa a contar pausado ou "
+                            "ganhar depois, e esta comparação é anterior ao último valor novo e "
+                            "continua em vigor. Um contador de abertos passa a contar pausado ou "
                             "cancelado. Trocar por lista positiva do que conta.")
 
     # 10. Intervalo de tempo sem CHECK de ordem (inline na coluna, na tabela ou por alter table).
@@ -1208,7 +1504,7 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
         if not (tokens & TOKENS_HISTORICO) or (tokens & TOKENS_NAO_HISTORICO):
             continue
         for col, ref, on_delete in sorted(set(t["fks"])):
-            if on_delete == "cascade":
+            if on_delete == "cascade" and ref not in RAIZES_DE_INQUILINO:
                 add("cascade-apaga-historico", "medio",
                     f"`{tabela}.{col}` apaga o histórico junto com `{ref}` (on delete cascade)",
                     t.get("arquivo", "?"), t.get("linha"), dimensao="corretude",
@@ -1217,10 +1513,9 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
                             "ou copiar o histórico antes.")
 
     # 12. Documentação que cita policy que não existe.
-    conhecidos = ({p["nome"] for p in banco.get("policies", [])} | set(tabelas) | set(funcoes)
-                  | {c for t in tabelas.values() for c in t["colunas"]} | PAPEIS_DO_BANCO
-                  | {t["nome"] for t in banco.get("triggers", [])}
-                  | {v["nome"] for v in banco.get("views", [])} | set(banco.get("enums", {})))
+    # Conhecido = aparece em algum lugar do SQL (tabela, coluna, função, trigger, índice,
+    # extensão) ou é papel do banco. O que sobra é nome que a instalação limpa não cria.
+    conhecidos = PAPEIS_DO_BANCO | {x for _, t in limpos for x in re.findall(r"[a-z_][a-z0-9_]*", t.lower())}
     for arq in coletar(perfil, "docs"):
         for n, linha in enumerate(ler(arq).splitlines(), 1):
             if not re.search(r"polic", linha, re.I):
@@ -1233,6 +1528,53 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
                         detalhe="A instalação limpa não cria o que o manual promete. Ou a policy "
                                 "foi aplicada à mão em produção (repo e banco divergiram), ou o "
                                 "manual descreve proteção que não existe.")
+
+    # 13. Arquivo reaplicado (baseline, seed) que concede a quem é de fora e só revoga depois.
+    # Migration roda uma vez, dentro de transação; arquivo reaplicado com o app no ar roda
+    # comando a comando, e entre o GRANT e o REVOKE a função ou tabela fica aberta. O estado
+    # final está certo, e é por isso que quem calcula só o estado final nunca acusa.
+    de_fora = {"anon", "authenticated", "public"}
+    for arq in coletar(perfil, "reaplicados"):
+        texto = _sem_comentario(ler(arq))
+        linha_de = _mapa_linhas(texto)
+        # Eventos por (objeto, papel), em ordem. Só é janela se o estado FINAL do papel no
+        # arquivo for revogado: `revoke ... from public, anon, authenticated` seguido de
+        # `grant ... to authenticated` é o idioma de quem QUER o acesso, não janela.
+        eventos: dict[tuple[str, str], list[tuple[str, int]]] = {}
+        for m in RE_GRANT_OU_REVOKE.finditer(texto):
+            st = _statement(texto, m.start())
+            alvo = RE_ALVO_FUNCAO.search(st) or re.search(
+                r"\bon\s+(?:table\s+)?" + SQ + r"([a-z0-9_]+)", st, re.I)
+            if not alvo:
+                continue
+            nome = alvo.group(1).lower()
+            if m.group(1).lower() == "grant":
+                # Tabela com RLS já ligada neste ponto do arquivo não abre janela: quem barra
+                # durante a reaplicação é a policy, não o grant.
+                if not RE_ALVO_FUNCAO.search(st) and re.search(
+                        r"alter\s+table\s+(?:only\s+)?" + SQ + re.escape(nome)
+                        + r"\"?\s+enable\s+row\s+level\s+security", texto[:m.start()], re.I):
+                    continue
+                for papel in _papeis_do_comando(st, "to") & de_fora:
+                    eventos.setdefault((nome, papel), []).append(("grant", m.start()))
+            else:
+                for papel in _papeis_do_comando(st, "from") & de_fora:
+                    eventos.setdefault((nome, papel), []).append(("revoke", m.start()))
+        acusados: set[str] = set()
+        for (nome, papel), evs in sorted(eventos.items()):
+            concedido = next((pos for tipo, pos in evs if tipo == "grant"), None)
+            if concedido is None or evs[-1][0] != "revoke" or nome in acusados:
+                continue
+            acusados.add(nome)
+            fim = evs[-1][1]
+            add("janela-na-reaplicacao", "medio",
+                f"`{nome}` é concedido a {papel} e só revogado {linha_de(fim) - linha_de(concedido)} linhas depois",
+                rel(perfil, arq), linha_de(concedido),
+                detalhe="Este arquivo é reaplicado inteiro, comando a comando, com o app no "
+                        "ar. Entre o GRANT e o REVOKE o objeto fica aberto a quem é de fora, e "
+                        "o estado final revogado mostra que o acesso não era pra existir. "
+                        "Auditoria que só olha o estado final não vê. Tirar a concessão do "
+                        "corpo ou mover o REVOKE pra antes, e rodar o arquivo numa transação só.")
 
 
 # ---------------------------------------------------------------------------

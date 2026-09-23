@@ -17,7 +17,7 @@ stable
 security definer
 set search_path = ''
 as $$
-  -- inativo tambem responde aqui
+  -- nao olha se o membro esta ativo
   select papel from public.membros where id = auth.uid();
 $$;
 
@@ -134,7 +134,6 @@ alter table public.pacotes_horas enable row level security;
 create policy "pacotes_horas_dono" on public.pacotes_horas
   for select to authenticated using (public.eh_dono());
 
-alter type public.status_assinatura add value 'pausada';
 
 create or replace function public.assinaturas_em_aberto()
 returns bigint
@@ -203,3 +202,21 @@ alter table public.creditos_horas add constraint creditos_horas_pacote_fkey
 alter table public.creditos_horas enable row level security;
 create policy "creditos_horas_dono" on public.creditos_horas
   for select to authenticated using (public.eh_dono());
+
+create or replace function public.assinaturas_ativas_v()
+returns bigint
+language sql
+stable
+set search_path = ''
+as $$
+  select count(*) from public.assinaturas where status <> 'inadimplente';
+$$;
+
+create or replace function public.assinaturas_nao_arquivadas()
+returns bigint
+language sql
+stable
+set search_path = ''
+as $$
+  select count(*) from public.assinaturas where status <> 'arquivada';
+$$;

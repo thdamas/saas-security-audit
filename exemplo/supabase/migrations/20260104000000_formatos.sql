@@ -262,3 +262,14 @@ as $$
   select exists (select 1 from public.membros where id = p_user and papel = 'dono');
 $$;
 revoke execute on function public.is_org_admin(uuid, uuid) from public, anon;
+
+create table public.anotacoes (
+  id bigserial primary key,
+  autor_id uuid not null,
+  texto text
+);
+alter table public.anotacoes enable row level security;
+create policy "anotacoes_select_autor" on public.anotacoes
+  for select to authenticated using (autor_id = auth.uid());
+create policy "anotacoes_insert_livre" on public.anotacoes
+  for insert to authenticated;

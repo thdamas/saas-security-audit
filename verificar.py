@@ -31,7 +31,7 @@ ESPERADOS = [
     ("rls-ausente", 1, "tabela `convites` sem RLS"),
     ("rls-sem-policy", 1, "tabela `logs_admin` com RLS e zero policy"),
     ("policy-tautologica", 1, "policy `planos_publicos` com using (true); as vizinhas NÃO podem ser acusadas"),
-    ("escrita-sem-with-check", 2, "UPDATE só com USING em `profiles` e em `comentarios`"),
+    ("escrita-sem-with-check", 1, "INSERT sem WITH CHECK em `anotacoes`; UPDATE só com USING NÃO entra, porque o Postgres usa o USING como trava"),
     ("definer-sem-search-path", 1, "`marcar_inadimplente`; `contar_assinantes` tem search_path e NÃO entra"),
     ("search-path-mutavel", 2, "`eh_staff` e `total_pago`, não-definer sem search_path"),
     ("view-definer", 1, "view `resumo_financeiro` sem security_invoker = true"),
@@ -90,6 +90,8 @@ NEGATIVOS = [
     ("enum-cresceu-comparacao-negativa", "papel <>"),
     ("enum-cresceu-comparacao-negativa", "'ativa'"),
     ("enum-cresceu-comparacao-negativa", "rascunho"),
+    ("escrita-sem-with-check", "profiles_update_proprio"),
+    ("escrita-sem-with-check", "comentarios_update_autor"),
     ("papel-ignora-desativacao", "tem_tarefa_aberta"),
     ("coluna-sensivel-exposta", "token_count"),
     ("cascade-apaga-historico", "avisos_horas"),
@@ -100,8 +102,8 @@ NEGATIVOS = [
 ]
 
 INVENTARIO_ESPERADO = {
-    ("banco", "total_tabelas"): 25,
-    ("banco", "total_policies"): 30,
+    ("banco", "total_tabelas"): 26,
+    ("banco", "total_policies"): 32,
     ("banco", "total_funcoes"): 26,
     ("banco", "total_definer"): 19,
     ("codigo", "total_server_functions"): 5,
@@ -238,8 +240,8 @@ def main() -> int:
             ok("baseline de status gravado fora da pasta da rodada")
         else:
             falha("baseline não foi gravado", erros)
-        if "20 bloqueador" in r.stdout:
-            ok("gate contou 20 bloqueadores (4 críticos + 16 altos)")
+        if "19 bloqueador" in r.stdout:
+            ok("gate contou 19 bloqueadores (4 críticos + 15 altos)")
         else:
             falha(f"gate com contagem inesperada: {r.stdout.strip()}", erros)
 

@@ -41,7 +41,7 @@ Estes são **todos** os itens que você audita, e você audita **todos**. A list
 Do catálogo, com prioridade nesta ordem:
 
 1. **Isolamento.** Um usuário alcança dado de outro? Um titular alcança dado de staff? **Um parceiro alcança vida de outro parceiro?** (mesma base, só o escopo separa, e tem CPF de gente real dentro)
-2. **Policy.** RLS ligado? Existe policy? Tem `USING` **e** `WITH CHECK`? Escrita sem `WITH CHECK` deixa gravar linha de outro dono mesmo sem poder ler. Policies permissivas na mesma tabela e comando se combinam com **OU**, então uma policy ampla de staff alarga todas as outras em silêncio.
+2. **Policy.** RLS ligado? Existe policy? Tem trava de escrita? Em `INSERT` só o `WITH CHECK` confere a linha nova. Em `UPDATE` e `ALL`, sem `WITH CHECK` o Postgres usa o `USING` como trava, então policy só com `USING` não é achado por si; o risco que sobra ali é mudar coluna de sistema (`role`, `owner_id`, `plano`), que o `USING` não impede. Policies permissivas na mesma tabela se combinam com **OU**, inclusive uma de `ALL` com as de cada comando, então uma policy ampla de staff alarga todas as outras em silêncio.
 3. **Privilégio.** `SECURITY DEFINER` com `search_path` fixo? View definer? RPC que aceita id sem checar vínculo? Onde o client `service_role` é usado, ele revalida identidade e escopo antes de agir?
 4. **Coluna sensível.** A linha certa pode estar exposta com coluna demais (token, e-mail de terceiro, id de pagamento).
 5. **Entrada não confiável.** Identidade derivada do JWT verificado no servidor, ou aceita do corpo da requisição? Escrita com allow-list de campo, ou grava o objeto inteiro?

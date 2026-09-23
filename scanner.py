@@ -364,14 +364,16 @@ def inventario_banco(perfil: dict) -> dict:
         for (t, c), ns in sorted(por_tabela_comando.items()) if len(ns) > 1
     ]
 
-    # Escrita sem WITH CHECK: deixa gravar linha de outro dono mesmo sem poder ler.
-    # Em INSERT o Postgres exige WITH CHECK (USING não se aplica), então o caso real
-    # é UPDATE e ALL só com USING.
+    # Escrita sem trava. Em UPDATE e ALL sem WITH CHECK, o Postgres usa o USING como trava
+    # (documentação do CREATE POLICY), então só falta trava quando não há nenhum dos dois.
+    # Em INSERT o USING não se aplica e a documentação não define o que vale sem WITH CHECK:
+    # continua acusado, porque ou libera qualquer linha ou não faz nada.
     escrita_sem_check = [
         {"policy": p["nome"], "tabela": p["tabela"], "comando": p["comando"],
          "arquivo": p["arquivo"], "linha": p["linha"]}
         for p in policies
-        if p["comando"] in ("insert", "update", "all") and not p["tem_with_check"]
+        if (p["comando"] == "insert" and not p["tem_with_check"])
+        or (p["comando"] in ("update", "all") and not p["tem_with_check"] and not p["tem_using"])
     ]
 
     tabelas_sem_rls = sorted(set(tabelas) - rls_on)
@@ -587,8 +589,10 @@ def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
         add("escrita-sem-with-check", "alto",
             f"Policy `{p['policy']}` ({p['comando'].upper()}) em `{p['tabela']}` sem WITH CHECK",
             p["arquivo"], p["linha"],
-            detalhe="USING filtra o que se LÊ; WITH CHECK filtra o que se GRAVA. Sem ele, dá "
-                    "pra inserir ou atualizar linha de outro dono mesmo sem conseguir ler.")
+            detalhe="Nenhuma trava sobre a linha gravada. Em INSERT só o WITH CHECK confere o "
+                    "que entra; em UPDATE e ALL o Postgres usaria o USING no lugar dele, mas "
+                    "esta policy não tem nenhum dos dois. Declarar `with check (...)` com a "
+                    "mesma regra de dono que a leitura usa.")
 
     # 5. DEFINER sem search_path
     for f in banco["definer_sem_searchpath"]:

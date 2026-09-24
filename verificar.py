@@ -56,7 +56,10 @@ ESPERADOS = [
     ("papel-no-cadastro-sem-confirmacao", 2, "`trg_aplicar_convite` e o `create or replace trigger`; a versão que exige email_confirmed_at NÃO entra"),
     ("oraculo-de-convite", 2, "`email_convidado` e `convite_reaberto`, que teve grant DEPOIS do revoke"),
     ("primeiro-usuario-vira-dono", 3, "not exists sem filtro, count em subselect e count into"),
-    ("definer-sem-revoke", 9, "e `fn_exposta`, com GRANT explícito; antes: " + "os 4 de antes, o revoke só de anon, `convite_por_token`, `perfil_por_email` e `convite_reaberto`"),
+    ("definer-sem-revoke", 9, "e `historico(p_conta, p_dias)`, que confere quem chama mas não foi fechada, com a outra versão apagada por DROP; antes: `fn_exposta`, com GRANT explícito; " + "os de antes, o revoke só de anon, `convite_por_token`, `perfil_por_email` e `convite_reaberto`; `marcar_inadimplente` subiu pra regra própria e `privado.fechar_conta` está em esquema que a API não publica"),
+    ("definer-confia-no-parametro", 7, "`saldo_publico_da_conta` (retrato do banco que concede a authenticated), `extrato_da_conta` (devolve linhas), `marcar_inadimplente` (grava), os helpers só-booleanos `is_org_admin` e `tem_tarefa_aberta`, a versão `pedidos(p_user)` escondida atrás da `pedidos()` que confere, e `resumo_pedidos`, que chama um nome que só uma das versões confere; quem confere auth.uid() direto ou por helper, quem foi revogado de authenticated e quem mora em esquema privado NÃO entram"),
+    ("coluna-de-privilegio-editavel", 2, "`profiles_update_proprio` deixa mudar `role`, que `eh_staff` lê, e `socios_edita_proprio`, cuja `org_id` nasceu por ADD COLUMN; trigger que trava a coluna, grant de coluna, coluna que nenhuma função lê e `c.role` de OUTRA tabela NÃO entram"),
+    ("acesso-por-id-sem-dono", 3, "`apagarCartao` grava pelo ORM, `expurgarCartao` grava pelo cliente de servidor e `lerQuadro` lê, todos pelo id do input sem olhar quem chama; quem confere posse, quem filtra pelo usuário, quem não toca o banco e `arquivarCartao`, que grava pelo cliente com a sessão (a RLS protege), NÃO entram"),
     ("enum-cresceu-comparacao-negativa", 2, "`status <> 'cancelada'` e `fase <> 'fechada'` de enum entre aspas; `papel <> 'cancelada'` e o comentário NÃO entram"),
     ("intervalo-sem-check", 1, "`apontamentos` (inicio, fim); `pacotes_horas` tem check e NÃO entra"),
     ("cascade-apaga-historico", 4, "inline, por alter table, por constraint de tabela e `payments` no formato do db diff; `horarios` NÃO entra; `tarefas.membro_id` não é histórico e NÃO entra"),
@@ -65,6 +68,27 @@ ESPERADOS = [
 
 # Casos limpos que NÃO podem aparecer no título de nenhum achado da regra.
 NEGATIVOS = [
+    ("definer-confia-no-parametro", "saldo_da_conta"),
+    ("definer-confia-no-parametro", "contas_do_usuario"),
+    ("definer-confia-no-parametro", "recalcular_conta"),
+    ("definer-confia-no-parametro", "fechar_conta"),
+    ("definer-confia-no-parametro", "fechar_mes_da_conta"),
+    ("definer-confia-no-parametro", "apagar_conta_antiga"),
+    ("definer-sem-revoke", "apagar_conta_antiga"),
+    ("definer-confia-no-parametro", "historico"),
+    ("definer-confia-no-parametro", "consolidar_conta"),
+    ("definer-sem-revoke", "consolidar_conta"),
+    ("definer-confia-no-parametro", "resumo_mes"),
+    ("acesso-por-id-sem-dono", "arquivarCartao"),
+    ("definer-sem-revoke", "fechar_mes_da_conta"),
+    ("definer-sem-revoke", "fechar_conta"),
+    ("definer-sem-revoke", "marcar_inadimplente"),
+    ("coluna-de-privilegio-editavel", "equipe_org"),
+    ("coluna-de-privilegio-editavel", "vitrine"),
+    ("coluna-de-privilegio-editavel", "cartao_visita"),
+    ("acesso-por-id-sem-dono", "renomearQuadro"),
+    ("acesso-por-id-sem-dono", "sairDoQuadro"),
+    ("acesso-por-id-sem-dono", "contarCartoes"),
     ("papel-ignora-desativacao", "eh_dono"),
     ("coluna-sensivel-exposta", "anon"),
     ("escrita-so-confere-autoria", "tarefas_insert_membro"),
@@ -142,11 +166,11 @@ NEGATIVOS = [
 ]
 
 INVENTARIO_ESPERADO = {
-    ("banco", "total_tabelas"): 38,
-    ("banco", "total_policies"): 40,
-    ("banco", "total_funcoes"): 33,
-    ("banco", "total_definer"): 22,
-    ("codigo", "total_server_functions"): 7,
+    ("banco", "total_tabelas"): 43,
+    ("banco", "total_policies"): 45,
+    ("banco", "total_funcoes"): 50,
+    ("banco", "total_definer"): 34,
+    ("codigo", "total_server_functions"): 8,
     ("codigo", "total_rotas_api"): 5,
     ("codigo", "total_testes"): 1,
 }
@@ -230,6 +254,13 @@ def main() -> int:
         else:
             ok(f"{regra} não acusa o caso limpo `{limpo}`")
 
+    sev_confia = {n: [a["severidade"] for a in mec["achados"] if a["regra"] == "definer-confia-no-parametro" and f"`{n}`" in a["titulo"]]
+                  for n in ("extrato_da_conta", "marcar_inadimplente", "is_org_admin")}
+    if sev_confia == {"extrato_da_conta": ["alto"], "marcar_inadimplente": ["alto"], "is_org_admin": ["medio"]}:
+        ok("definer que confia no parâmetro: alto quando devolve linha ou grava, médio quando só responde sim ou não")
+    else:
+        falha(f"severidade do definer-confia-no-parametro inesperada: {sev_confia}", erros)
+
     sev_exposta = [a["severidade"] for a in mec["achados"] if a["regra"] == "definer-sem-revoke" and "fn_exposta" in a["titulo"]]
     if sev_exposta == ["alto"]:
         ok("definer com GRANT explícito sobe pra alto")
@@ -286,8 +317,8 @@ def main() -> int:
             ok("baseline de status gravado fora da pasta da rodada")
         else:
             falha("baseline não foi gravado", erros)
-        if "24 bloqueador" in r.stdout:
-            ok("gate contou 24 bloqueadores (5 críticos + 19 altos: 3 definers com GRANT explícito)")
+        if "33 bloqueador" in r.stdout:
+            ok("gate contou 33 bloqueadores (7 críticos + 26 altos: 3 definers com GRANT explícito, 5 que confiam no parâmetro e 2 acessos por id sem dono)")
         else:
             falha(f"gate com contagem inesperada: {r.stdout.strip()}", erros)
 

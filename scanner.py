@@ -381,8 +381,14 @@ def inventario_banco(perfil: dict) -> dict:
             nome_pol, tabela_pol = _nome_e_tabela(m)
             drops.append({"nome": nome_pol, "tabela": tabela_pol, "arquivo": nome_arq})
             eventos.append(((i, m.start()), "pol_drop", (nome_pol, tabela_pol)))
+        # DROP FUNCTION tira a versão do estado final, na ordem em que roda.
+        for m in RE_DROP_FUNC.finditer(texto):
+            eventos.append(((i, m.start()), "func_drop", m.group(1)))
         for m in RE_FUNC.finditer(texto):
             nome = m.group(1).lower()
+            abre_p = texto.find("(", m.end() - 1)
+            eventos.append(((i, m.start()), "func_create",
+                            (nome, _assinatura(_entre_parenteses(texto, abre_p)) if abre_p != -1 else "")))
             corpo = _corpo_da_funcao(texto, m.start())
             definer = bool(re.search(r"security\s+definer", corpo, re.I))
             searchpath = bool(re.search(r"set\s+\"?search_path\"?", corpo, re.I))
@@ -425,7 +431,21 @@ def inventario_banco(perfil: dict) -> dict:
     dinamicas = set(rls_on)
     pol_final: dict[tuple[str, str], dict] = {}
     views_final: dict[str, dict] = {}
+    versoes_vivas: dict[str, set[str]] = {}
     for _, tipo, dado in sorted(eventos, key=lambda e: e[0]):
+        if tipo == "func_create":
+            versoes_vivas.setdefault(dado[0], set()).add(dado[1])
+            continue
+        if tipo == "func_drop":
+            for item in _partes_de_topo(dado):
+                alvo_d = re.match(SQ + r"([a-z0-9_]+)\"?\s*(\()?", item.strip(), re.I)
+                if alvo_d and alvo_d.group(1).lower() in versoes_vivas:
+                    if alvo_d.group(2):
+                        versoes_vivas[alvo_d.group(1).lower()].discard(
+                            _assinatura(_entre_parenteses(item, item.find("("))))
+                    else:
+                        versoes_vivas[alvo_d.group(1).lower()].clear()
+            continue
         if tipo == "tab_create":
             nome, esq, arq_ = dado
             tabelas.setdefault(nome, arq_)
@@ -468,6 +488,9 @@ def inventario_banco(perfil: dict) -> dict:
             for n in dado:
                 views_final.pop(n, None)
     rls_on |= dinamicas
+    for nome_v, vivas in versoes_vivas.items():
+        if not vivas:
+            funcoes.pop(nome_v, None)
     policies = list(pol_final.values())
     views = list(views_final.values())
 
@@ -1012,6 +1035,10 @@ def detectores_mecanicos(perfil: dict, banco: dict, codigo: dict) -> dict:
         detectores_de_escopo(perfil, banco, add)
     except Exception as e:
         eprint(f"[scanner] detectores_de_escopo falhou: {e!r}")
+    try:
+        detectores_de_codigo(perfil, add)
+    except Exception as e:
+        eprint(f"[scanner] detectores_de_codigo falhou: {e!r}")
 
     return {"achados": achados, "front_hits": front_hits}
 
@@ -1055,6 +1082,11 @@ RE_ADD_VALUE = re.compile(r"alter\s+type\s+" + SQ + r"([a-z0-9_]+)\"?\s+add\s+va
 RE_COMENTARIO_SQL = re.compile(r"--[^\n]*")
 RE_UID_EMBRULHADO = re.compile(r"\(\s*select\s+auth\.uid\(\)\s*(?:as\s+\w+\s*)?\)", re.I)
 RE_CONVITE = re.compile(r"invit|convite", re.I)
+# Marca de arquivo gerado por pg_dump ou `supabase db dump`: o cabeçalho de sessão que só o
+# dump escreve. Migration escrita à mão não traz estas linhas.
+RE_RETRATO_DO_BANCO = re.compile(
+    r"^\s*SET\s+check_function_bodies\s*=\s*false\s*;|Dumped (?:from|by) (?:database version|pg_dump)",
+    re.I | re.M)
 TOKENS_HISTORICO = {
     "horas", "hours", "apontamentos", "pagamentos", "payments", "faturas", "invoices", "creditos",
     "credits", "lancamentos", "ledger", "transacoes", "transactions", "extrato", "extratos",
@@ -1164,18 +1196,160 @@ def _funcoes_do_comando(st: str) -> list[str]:
     return nomes
 
 
+RE_DROP_FUNC = re.compile(r"drop\s+function\s+(?:if\s+exists\s+)?([^;]+?)\s*(?:\bcascade\b|\brestrict\b)?\s*;", re.I)
+SINONIMOS_DE_TIPO = {"int": "integer", "int4": "integer", "int8": "bigint", "int2": "smallint",
+                     "bool": "boolean", "timestamptz": "timestamp with time zone",
+                     "varchar": "character varying", "float8": "double precision"}
+
+
+def _assinatura(params: str) -> str:
+    """Tipos dos parâmetros, sem nome, modo, default nem tamanho: é o que o Postgres usa para
+    distinguir sobrecarga. `user_uuid UUID` e `user_uuid uuid` são a mesma função."""
+    tipos = []
+    for p in _partes_de_topo(params):
+        p = re.split(r"\bdefault\b|=", p.replace('"', ""), maxsplit=1, flags=re.I)[0]
+        tokens = [t for t in p.lower().split() if t not in ("in", "out", "inout", "variadic")]
+        if not tokens:
+            continue
+        tipo = " ".join(tokens[1:] if len(tokens) > 1 else tokens)
+        tipo = re.sub(r"\([^)]*\)", "", re.sub(r"^public\.", "", tipo)).strip()
+        tipos.append(SINONIMOS_DE_TIPO.get(tipo, tipo))
+    return ",".join(tipos)
+
+
+def _laco_de_funcoes(texto: str, pos: int, st: str):
+    """GRANT/REVOKE montado em laço: `execute format('revoke ... on function %s from ...', sig)`
+    dentro de um `do $$ ... names text[] := array[...]`. Devolve (nomes, comando sem a aspa) ou None.
+    Mesma leitura que o inventário já faz para RLS ligada em laço."""
+    if not re.search(r"\bon\s+function\s+%", st, re.I):
+        return None
+    ini = max(texto.rfind("do $", 0, pos), texto.rfind("do\n$", 0, pos), texto.lower().rfind("do $", 0, pos))
+    if ini == -1:
+        return None
+    fim = texto.lower().find("end loop", pos)
+    janela = texto[ini:fim if fim != -1 else pos + 2000]
+    nomes = [n.lower() for lista in re.findall(r"array\s*\[([^\]]*)\]", janela, re.I)
+             for n in re.findall(r"'([a-z0-9_]+)'", lista, re.I)]
+    if not nomes:
+        return None
+    return nomes, st.split("'")[0] + ";"
+
+
 def _alcanca_anon(papeis) -> bool:
     """Policy sem TO vale para PUBLIC, e PUBLIC inclui anon."""
     return not papeis or "anon" in papeis or "public" in papeis
 
 
+RE_IDENTIDADE_JS = re.compile(
+    r"\bctx\.(?:user|session|auth)\b|\buserId\b|\bsession\b|\bgetUser\s*\(|\bgetSession\s*\("
+    r"|\bcurrentUser\b|\b(?:require|verify|assert|check|ensure|authorize|can)[A-Z]\w*\s*\("
+    r"|\bauth\s*\(")
+# ORM ligado direto no banco (Drizzle, Prisma): não passa pela RLS, então quem protege é o código.
+RE_GRAVA_ORM = re.compile(
+    r"\.\s*(?:update|delete)\s*\(\s*\w+\s*\)[\s\S]{0,400}?\.where\s*\("
+    r"|\.\s*\w+\s*\.\s*(?:update|delete|updateMany|deleteMany|upsert)\s*\(\s*\{")
+RE_LE_ORM = re.compile(
+    r"\.\s*(?:findFirst|findUnique|findMany|findFirstOrThrow|findUniqueOrThrow)\s*\("
+    r"|\.query\.\w+\.find\w*\s*\(|\.select\s*\([\s\S]{0,200}?\.from\s*\(\s*\w+\s*\)")
+# Cliente do Supabase: com a sessão do usuário quem protege é a RLS e a rota não precisa
+# conferir nada. Só conta quando o cliente é o privilegiado, que ignora a RLS.
+RE_GRAVA_SUPABASE = re.compile(r"\.from\s*\(\s*['\"`]\w+['\"`]\s*\)\s*\.\s*(?:update|delete|upsert)\s*\(")
+RE_LE_SUPABASE = re.compile(r"\.from\s*\(\s*['\"`]\w+['\"`]\s*\)\s*\.\s*select\s*\(")
+RE_CLIENTE_PRIVILEGIADO_JS = re.compile(
+    r"service_?role|serviceRole|SERVICE_ROLE|supabaseAdmin|createAdminClient|adminClient|\w*Admin\b")
+RE_ID_DE_FORA = re.compile(r"\binput\.\w+|\bparams\.\w+|\bbody\.\w+")
+
+
+def _fecha_js(t: str, i: int, abre: str = "{", fecha: str = "}") -> int:
+    d = 0
+    for j in range(i, len(t)):
+        if t[j] == abre:
+            d += 1
+        elif t[j] == fecha:
+            d -= 1
+            if d == 0:
+                return j
+    return len(t) - 1
+
+
+def _corpo_js(t: str, abre_paren: int) -> int:
+    """'{' do corpo de uma função, pulando parâmetros desestruturados e o tipo de retorno."""
+    j = _fecha_js(t, abre_paren, "(", ")") + 1
+    ang = 0
+    while j < len(t):
+        c = t[j]
+        if c == "<":
+            ang += 1
+        elif c == ">" and ang and t[j - 1] != "=":
+            ang -= 1
+        elif c == "{" and ang == 0:
+            return j
+        elif c == ";" and ang == 0:
+            return -1
+        j += 1
+    return -1
+
+
+def _handlers_js(t: str):
+    """Unidades que recebem requisição: procedimento tRPC, action do Remix, verbo do Next."""
+    for m in re.finditer(r"\.(mutation|query)\s*\(\s*async\s*\(", t):
+        seta = t.find("=>", m.end())
+        a = t.find("{", seta) if seta != -1 else -1
+        if a != -1:
+            yield ("gravacao" if m.group(1) == "mutation" else "leitura"), m.start(), t[m.start():_fecha_js(t, a) + 1]
+    for m in re.finditer(r"export\s+(?:async\s+)?function\s+(action|POST|PUT|PATCH|DELETE)\s*\(", t):
+        a = _corpo_js(t, m.end() - 1)
+        if a != -1:
+            yield "gravacao", m.start(), t[m.start():_fecha_js(t, a) + 1]
+
+
+def detectores_de_codigo(perfil: dict, add) -> None:
+    """Detectores que leem o código do servidor, medidos contra correções publicadas de apps reais."""
+    arquivos = sorted(set(coletar(perfil, "server_functions")) | set(coletar(perfil, "rotas_api")))
+    for arq in arquivos:
+        nome = rel(perfil, arq)
+        if RE_ARQUIVO_DE_TESTE.search("/" + nome) or arq.suffix not in (".ts", ".tsx", ".js", ".jsx", ".mjs"):
+            continue
+        t = _sem_comentario_js(ler(arq))
+        # 1. Acesso por id que veio de fora, sem olhar quem chama. Estar logado (o
+        # `protectedProcedure`) não diz de quem é o objeto: sem conferir o dono, qualquer
+        # conta lê ou apaga a de outra passando o id.
+        for tipo, ini, corpo in _handlers_js(t):
+            if not RE_ID_DE_FORA.search(corpo) or RE_IDENTIDADE_JS.search(corpo):
+                continue
+            privilegiado = bool(RE_CLIENTE_PRIVILEGIADO_JS.search(corpo)) or (
+                bool(perfil.get("privilegio", {}).get("nome_do_client_privilegiado"))
+                and perfil["privilegio"]["nome_do_client_privilegiado"] in corpo)
+            grava = bool(RE_GRAVA_ORM.search(corpo)) or (privilegiado and bool(RE_GRAVA_SUPABASE.search(corpo)))
+            if tipo == "gravacao" and not grava:
+                continue
+            if tipo == "leitura" and not (RE_LE_ORM.search(corpo) or (privilegiado and RE_LE_SUPABASE.search(corpo))):
+                continue
+            linha = t.count("\n", 0, ini) + 1
+            proc = re.findall(r"(\w+)\s*:\s*\w*[Pp]rocedure\b", t[max(0, ini - 3000):ini])
+            quem_e = proc[-1] if proc and corpo.startswith(".") else (
+                re.match(r"export\s+(?:async\s+)?function\s+(\w+)", corpo) or [None, "handler"])[1]
+            add("acesso-por-id-sem-dono", "alto" if grava else "medio",
+                f"`{quem_e}` " + ("grava" if grava else "lê")
+                + " pelo id que veio da requisição sem conferir quem chama",
+                nome, linha,
+                detalhe="O bloco recebe o id no input, " + ("altera ou apaga" if grava else "lê")
+                        + " o registro e não cita o usuário da sessão, nem chama função que confira "
+                        "posse ou papel. Estar logado não diz de quem é o objeto: qualquer conta "
+                        "age sobre a de outra trocando o id. Refuta: a checagem de dono mora num "
+                        "middleware ou numa policy do banco que este leitor não enxerga (citar), ou "
+                        "o id é um token secreto que já é a autorização.")
+
+
 def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
     textos = [(rel(perfil, a), ler(a)) for a in coletar(perfil, "migrations")]
     limpos = [(n, _sem_comentario(t)) for n, t in textos]
+    crus = dict(textos)
 
     # Estrutura: colunas, FKs e CHECKs de cada tabela, e a ÚLTIMA definição de cada função.
     tabelas: dict[str, dict] = {}
     funcoes: dict[str, dict] = {}
+    versoes: dict[tuple[str, str], dict] = {}
     for nome_arq, texto in limpos:
         linha_de = _mapa_linhas(texto)
         for m in RE_TABELA_ABRE.finditer(texto):
@@ -1201,7 +1375,25 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
                 if fk:
                     od = RE_ON_DELETE.search(p)
                     t["fks"].append((col, fk.group(1).lower(), od.group(1).lower() if od else ""))
-        for m in RE_FUNC.finditer(texto):
+        # CREATE e DROP na ordem em que rodam: função apagada (ou renomeada por drop + create com
+        # outro nome) sai do estado final. Sem isto, a versão morta continuava sendo julgada.
+        eventos_f = [(m.start(), "create", m) for m in RE_FUNC.finditer(texto)] + [
+            (m.start(), "drop", m) for m in RE_DROP_FUNC.finditer(texto)]
+        for _, tipo_f, m in sorted(eventos_f, key=lambda e: e[0]):
+            if tipo_f == "drop":
+                for item in _partes_de_topo(m.group(1)):
+                    alvo_d = re.match(SQ + r"([a-z0-9_]+)\"?\s*(\()?", item.strip(), re.I)
+                    if not alvo_d:
+                        continue
+                    nome_d = alvo_d.group(1).lower()
+                    if alvo_d.group(2):
+                        versoes.pop((nome_d, _assinatura(_entre_parenteses(item, item.find("(")))), None)
+                    else:
+                        for k in [k for k in versoes if k[0] == nome_d]:
+                            versoes.pop(k)
+                    if not any(k[0] == nome_d for k in versoes):
+                        funcoes.pop(nome_d, None)
+                continue
             corpo = _corpo_da_funcao(texto, m.start())
             abre = texto.find("(", m.end() - 1)
             funcoes[m.group(1).lower()] = {
@@ -1211,6 +1403,9 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
                 "trigger": bool(re.search(r"returns\s+trigger", corpo, re.I)),
                 "sem_texto": RE_LITERAL_SQL.sub("''", corpo),
             }
+            # Sobrecarga: `get_orgs(uid)` e `get_orgs()` são funções diferentes com o mesmo
+            # nome, e a versão sem parâmetro que confere auth.uid() escondia a que não confere.
+            versoes[(m.group(1).lower(), _assinatura(funcoes[m.group(1).lower()]["params"]))] = funcoes[m.group(1).lower()]
     # Estado final de EXECUTE por função, na ordem em que os comandos aparecem: um GRANT
     # posterior reabre o que um REVOKE anterior fechou.
     revogado: dict[str, set[str]] = {}
@@ -1221,8 +1416,11 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
             if t is None:
                 continue
             st = _statement(texto, m.start())
-            col = RE_ADD_COLUNA.match(st, m.end() - m.start())
-            if col:
+            # Um ALTER pode acrescentar várias colunas (`add column a ..., add column b ...`).
+            # Uma versão anterior nunca casava aqui: procurava `add column` DEPOIS do
+            # `add` que o RE_ALTER_TABELA já tinha consumido, e coluna acrescentada ficava
+            # invisível para todo detector que olha colunas.
+            for col in RE_ADD_COLUNA.finditer(st):
                 t["colunas"].setdefault(col.group(1).lower(), st)
             if re.search(r"\bcheck\s*\(", st, re.I):
                 t["checks"].append(st)
@@ -1232,7 +1430,12 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
                 t["fks"].append((fk.group(1).lower(), fk.group(2).lower(), od.group(1).lower() if od else ""))
         for m in RE_GRANT_OU_REVOKE.finditer(texto):
             st = _statement(texto, m.start())
-            for nome_f in _funcoes_do_comando(st):
+            nomes_cmd = _funcoes_do_comando(st)
+            if not nomes_cmd:
+                laco = _laco_de_funcoes(texto, m.start(), st)
+                if laco:
+                    nomes_cmd, st = laco
+            for nome_f in nomes_cmd:
                 estado = revogado.setdefault(nome_f, set())
                 if m.group(1).lower() == "revoke":
                     papeis_r = _papeis_do_comando(st, "from")
@@ -1242,6 +1445,23 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
                     papeis_g = _papeis_do_comando(st, "to")
                     estado.difference_update(papeis_g)
                     explicito.setdefault(nome_f, set()).update(papeis_g & {"anon", "authenticated"})
+        # Retrato do banco (pg_dump, `supabase db dump`, baseline consolidado): a lista de
+        # GRANT de cada função é COMPLETA. Função com `REVOKE ... FROM PUBLIC` cujo GRANT só
+        # cita service_role não é alcançável por anon nem authenticated, mesmo sem o REVOKE
+        # nominal deles. Sem isto, todo baseline consolidado vira "aberto por padrão".
+        if RE_RETRATO_DO_BANCO.search(crus.get(nome_arq, "")):
+            concedido: dict[str, set[str]] = {}
+            fechado_publico: set[str] = set()
+            for m in RE_GRANT_OU_REVOKE.finditer(texto):
+                st = _statement(texto, m.start())
+                for nome_f in list(_funcoes_do_comando(st)):
+                    if m.group(1).lower() == "revoke" and "public" in _papeis_do_comando(st, "from"):
+                        fechado_publico.add(nome_f)
+                    elif m.group(1).lower() == "grant":
+                        concedido.setdefault(nome_f, set()).update(_papeis_do_comando(st, "to"))
+            for nome_f in fechado_publico:
+                revogado.setdefault(nome_f, set()).update(
+                    {"anon", "authenticated"} - concedido.get(nome_f, set()))
     rls_on = set(banco.get("rls_habilitado", []))
 
     def fechada_pra_visitante(nome: str) -> bool:
@@ -1400,11 +1620,164 @@ def detectores_de_escopo(perfil: dict, banco: dict, add) -> None:
                         "esvaziar (um cascade de auth.users basta). Trocar por uma marca "
                         "permanente de instalação feita, que nunca volta a ser falsa.")
 
+    # 14. Definer que confia no identificador que o chamador manda. Nasceu de quatro
+    # gabaritos públicos com o mesmo formato: a função roda com o poder do dono do banco,
+    # recebe o id da conta, do usuário ou do recurso, e nunca pergunta quem está chamando.
+    # O `definer-sem-revoke` genérico acusava junto com dezenas de helpers corretos; este
+    # separa os que não olham a identidade de quem chama em lugar nenhum.
+    expostos_f = {e.lower() for e in banco.get("esquemas_expostos", ["public"])}
+    esquema_da_funcao: dict[str, str] = {}
+    for _, texto in limpos:
+        for m in re.finditer(r"create\s+(?:or\s+replace\s+)?function\s+(?:\"?([a-z_][a-z0-9_]*)\"?\s*\.\s*)?"
+                             r"\"?([a-z0-9_]+)\"?\s*\(", texto, re.I):
+            esquema_da_funcao[m.group(2).lower()] = (m.group(1) or "public").lower()
+    re_identidade = re.compile(
+        r"\bauth\s*\.\s*(?:uid|jwt|role|email)\s*\(|\bcurrent_user\b|\bsession_user\b"
+        r"|request\.jwt|\bcurrent_setting\s*\(\s*'request\.", re.I)
+    # Um nome só conta como "confere quem chama" quando TODAS as versões dele conferem.
+    por_nome: dict[str, list[dict]] = {}
+    for (n, _), f in versoes.items():
+        por_nome.setdefault(n, []).append(f)
+    olha_quem_chama: set[str] = set()
+
+    def _confere(f: dict) -> bool:
+        return bool(re_identidade.search(f["sem_texto"])) or any(
+            re.search(r"\b" + re.escape(h) + r"\s*\(", f["sem_texto"], re.I) for h in olha_quem_chama)
+    for _ in range(5):
+        novos = {n for n, fs in por_nome.items() if n not in olha_quem_chama and all(_confere(f) for f in fs)}
+        if not novos:
+            break
+        olha_quem_chama |= novos
+    confia_no_parametro: set[str] = set()
+    for (nome, _sig), f in sorted(versoes.items()):
+        if not f["definer"] or f["trigger"] or nome in confia_no_parametro or _confere(f):
+            continue
+        if esquema_da_funcao.get(nome, "public") not in expostos_f:
+            continue
+        if "authenticated" in revogado.get(nome, set()) and "anon" in revogado.get(nome, set()):
+            continue
+        ids = []
+        for p in _partes_de_topo(f["params"]):
+            tokens = [t for t in p.replace('"', "").split() if t.lower() not in ("in", "inout", "variadic")]
+            if len(tokens) >= 2 and (tokens[1].lower().startswith("uuid")
+                                     or re.search(r"(?:^|_)(?:id|uuid)$", tokens[0], re.I)):
+                ids.append(tokens[0].lower())
+        usados = [p for p in ids if re.search(r"\b" + re.escape(p) + r"\b", f["sem_texto"], re.I)]
+        if not usados:
+            continue
+        # Função só de cálculo (sem tabela lida ou escrita) não tem o que vazar.
+        if not RE_REF_TABELA.search(f["sem_texto"]) and not re.search(
+                r"\b(?:insert\s+into|update|delete\s+from)\s+", f["sem_texto"], re.I):
+            continue
+        confia_no_parametro.add(nome)
+        quem = "visitante e usuário logado" if "anon" not in revogado.get(nome, set()) else "usuário logado"
+        escreve = bool(re.search(r"\b(?:insert\s+into|update\s+\S+\s+set|delete\s+from)\b", f["sem_texto"], re.I))
+        # Helper que só responde sim ou não vaza um fato (fulano é admin?); função que devolve
+        # linhas ou grava age sobre o dado de outra conta.
+        so_booleano = bool(re.search(r"\breturns\s+boolean\b", f["corpo"], re.I)) and not escreve
+        add("definer-confia-no-parametro", "medio" if so_booleano else "alto",
+            f"Função definer `{nome}` recebe `{usados[0]}` e não confere quem chama"
+            + (" (e grava)" if escreve else ""),
+            f["arquivo"], f["linha"],
+            detalhe=f"Roda com o poder do dono do banco, é chamável por {quem} pela API, recebe "
+                    f"{', '.join('`' + u + '`' for u in usados)} de quem chama e não compara com "
+                    "`auth.uid()`, nem direto nem por uma função auxiliar que compare. Quem passar o "
+                    "id de outra conta age sobre ela. Refuta: a função só é chamada pelo servidor "
+                    "(então revogar de anon e authenticated), ou existe checagem que este leitor "
+                    "não reconhece (citar a linha).")
+
+    # 15. Coluna de papel ou de escopo na linha que o próprio usuário edita. A policy de
+    # UPDATE que só confere `dono = auth.uid()` diz QUAL linha a pessoa pode editar, não
+    # QUAIS colunas: se o papel ou a conta dela mora nessa linha, ela se promove ou muda de
+    # conta com um PATCH. O Postgres não barra coluna por policy; só trigger ou grant de coluna.
+    re_col_privilegio = re.compile(
+        r"^(role|roles|papel|user_role|account_role|member_role|org_role|team_role|workspace_role"
+        r"|is_admin|is_superadmin|is_super_admin|is_staff|admin|superadmin|tipo_acesso|access_level"
+        r"|account_id|org_id|organization_id|tenant_id|workspace_id|team_id)$", re.I)
+    protegidas: dict[str, set[str]] = {}
+    grant_de_coluna: set[str] = set()
+    sem_update: set[str] = set()
+    for _, texto in limpos:
+        for m in re.finditer(r"create\s+(?:or\s+replace\s+|constraint\s+)*trigger\s+\S+\s+before\s+"
+                             r"[^;]*?\bupdate\b[^;]*?\bon\s+" + SQ + r"([a-z0-9_]+)\"?[^;]*?execute\s+"
+                             r"(?:function|procedure)\s+" + SQ + r"([a-z0-9_]+)", texto, re.I):
+            corpo = funcoes.get(m.group(2).lower(), {}).get("sem_texto", "")
+            protegidas.setdefault(m.group(1).lower(), set()).update(
+                c.lower() for c in re.findall(r"\b(?:new|old)\s*\.\s*\"?([a-z0-9_]+)", corpo, re.I))
+        for m in re.finditer(r"grant\s+[^;]*?\bupdate\s*\([^)]*\)[^;]*?\bon\s+(?:table\s+)?" + SQ
+                             + r"([a-z0-9_]+)", texto, re.I):
+            grant_de_coluna.add(m.group(1).lower())
+        for m in re.finditer(r"revoke\s+[^;]*?\b(?:update|all)\b[^;]*?\bon\s+(?:table\s+)?" + SQ
+                             + r"([a-z0-9_]+)\"?\s+from\s+([^;]+)", texto, re.I):
+            if re.search(r"\bauthenticated\b", m.group(2), re.I):
+                sem_update.add(m.group(1).lower())
+    finais = {(p["arquivo"], p["linha"]) for p in banco.get("policies", [])}
+    ja_acusada: set[str] = set()
+    for nome_arq, texto in limpos:
+        linha_de = _mapa_linhas(texto)
+        for m in RE_POLICY.finditer(texto):
+            if (nome_arq, linha_de(m.start())) not in finais:
+                continue
+            resto = _statement(texto, m.end())
+            pol, tabela = _nome_e_tabela(m)
+            if _comando_da_policy(resto) not in ("update", "all") or tabela in ja_acusada:
+                continue
+            papeis = _roles_da_policy(resto)
+            if papeis and not (set(papeis) & {"authenticated", "public"}):
+                continue
+            expr = _expressao_apos(resto, r"with\s+check") or _expressao_apos(resto, r"\busing")
+            if expr is None:
+                continue
+            expr = RE_UID_EMBRULHADO.sub("auth.uid()", " ".join(expr.split())).lower().strip()
+            while expr.startswith("(") and expr.endswith(")") and _entre_parenteses(expr, 0) == expr[1:-1]:
+                expr = expr[1:-1].strip()
+            dono = (re.fullmatch(r"(?:\w+\.)?\"?(\w+)\"? ?= ?auth\.uid\(\)", expr)
+                    or re.fullmatch(r"auth\.uid\(\) ?= ?(?:\w+\.)?\"?(\w+)\"?", expr))
+            t = tabelas.get(tabela)
+            if not dono or not t or tabela in grant_de_coluna or tabela in sem_update:
+                continue
+            cols = [c for c in t["colunas"] if re_col_privilegio.match(c) and c != dono.group(1)
+                    and c not in protegidas.get(tabela, set())]
+            # Só acusa a coluna que decide acesso em algum lugar: função que lê esta tabela
+            # e olha a coluna. Sem isso, `role` pode ser texto de exibição.
+            # A coluna tem que ser DESTA tabela: `v_convite.role` é outro registro. Vale sem
+            # qualificador, pelo nome da tabela ou por um apelido que o corpo liga a ela.
+            def _le_coluna(f: dict, c: str) -> bool:
+                if tabela not in {x.lower() for x in RE_REF_TABELA.findall(f["corpo"])}:
+                    return False
+                apelidos = {tabela} | {a.lower() for a in re.findall(
+                    r"\b(?:from|join|update)\s+" + SQ + re.escape(tabela) + r"\"?\s+(?:as\s+)?([a-z_][a-z0-9_]*)",
+                    f["sem_texto"], re.I)}
+                for m_c in re.finditer(r"(?:\b([a-z_][a-z0-9_]*)\s*\.\s*)?\b" + re.escape(c) + r"\b",
+                                       f["sem_texto"], re.I):
+                    if m_c.group(1) is None or m_c.group(1).lower() in apelidos:
+                        return True
+                return False
+            decide = [c for c in cols if any(_le_coluna(f, c) for f in funcoes.values())]
+            if not decide:
+                continue
+            ja_acusada.add(tabela)
+            add("coluna-de-privilegio-editavel", "critico",
+                f"Policy `{pol}` deixa o dono da linha mudar `{', '.join(decide)}` em `{tabela}`",
+                nome_arq, linha_de(m.start()),
+                detalhe=f"A policy só confere `{dono.group(1)} = auth.uid()`, que escolhe a LINHA e "
+                        f"não as colunas. `{tabela}` guarda {', '.join('`' + c + '`' for c in decide)}, "
+                        "que uma função de acesso lê para decidir o que a pessoa pode fazer. Qualquer "
+                        "usuário logado se promove ou muda de conta com um UPDATE na própria linha. "
+                        "Refuta: trigger BEFORE UPDATE que barra a mudança dessas colunas, ou GRANT "
+                        "de UPDATE só nas colunas liberadas (citar a linha).")
+
     # 8. SECURITY DEFINER sem REVOKE EXECUTE de public E anon.
     for f in banco.get("funcoes", []):
         nome = f["nome"]
         info = funcoes.get(nome, {})
         if not f.get("definer") or info.get("trigger") or fechada_pra_visitante(nome):
+            continue
+        if nome in confia_no_parametro:
+            continue
+        if nome not in funcoes:
+            continue
+        if esquema_da_funcao.get(nome, "public") not in expostos_f:
             continue
         # GRANT explícito a quem é de fora é intenção de expor: sobe pra alto, porque aí a
         # função precisa conferir por dentro quem chama, e o achado é conferir se confere.

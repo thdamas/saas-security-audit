@@ -4,7 +4,7 @@ Auditoria de segurança e corretude de um SaaS, feita por agentes de IA com cobe
 
 Read-only: acha, prova e propõe. Nunca corrige sozinho.
 
-> **English:** [README.md](README.md).
+> **English:** [README.md](README.md). **O que mudou em cada versão:** [CHANGELOG.md](CHANGELOG.md), em inglês.
 
 ---
 

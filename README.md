@@ -78,7 +78,7 @@ That's **dimension B (correctness)**, with four lenses of its own. It is the par
 - **Calibrated on real apps, still noisy.** The engine was run against four large open-source Supabase apps (hundreds of tables, over a thousand migrations) and a sample of its findings was judged by independent reviewers reading the code: after calibration it keeps every true finding in that sample and about 45% of what it raises is real. A second round used six apps that had published security fixes, running the engine before and after each fix and against the authors' later commits. The three detectors born there (a privileged function that trusts the id it receives, a privilege column the row owner can edit, and a server handler that reads or writes by id without checking ownership) flagged the functions and handlers those authors went on to fix, and in a skeptic-judged sample of apps without published fixes about three in four of their findings were real, the rest mostly intentional public access. The overall scanner is still noisier than that. That is why the method has a skeptic phase: the scanner is a locator, not a verdict.
 - **Passing the gate is not a certification.** It's an informed verdict about what was examined, shipped with the list of what wasn't.
 
-> **Português:** [README.pt-BR.md](README.pt-BR.md).
+> **Português:** [README.pt-BR.md](README.pt-BR.md). **What changed in each version:** [CHANGELOG.md](CHANGELOG.md).
 >
 > The method, the prompts and the report are written in **Portuguese**, because they were built for a Brazilian studio and the findings go straight to a human reader. The code, the CLI and the profile format are language-neutral. Translation PRs are very welcome.
 

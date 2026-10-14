@@ -74,7 +74,7 @@ cp referencias/perfil.template.toml /caminho/do/seu/app/.claude/auditoria/perfil
 python scanner.py --perfil /caminho/do/seu/app/.claude/auditoria/perfil.toml --print
 ```
 
-Depois, dentro do Claude Code, copie `SKILL.md` para `.claude/skills/auditor/SKILL.md` (junto com `prompts/` e `referencias/`) e chame `/auditor`. A skill conduz o loop de 6 fases, com portão humano entre elas.
+Depois, dentro do Claude Code, copie `SKILL.md` para `.claude/skills/auditor/SKILL.md` (junto com `prompts/` e `referencias/`) e chame `/auditor`. A skill conduz o loop de 7 fases (da 0 à 6), com portão humano entre elas.
 
 > **O perfil é o ponto de falha mais barato e mais perigoso.** Se ele lista o papel errado ou esquece uma pasta, a auditoria roda com o mapa torto e reporta com confiança sobre o lugar errado. Leia a definição do enum no schema, não infira de ocorrência de string.
 

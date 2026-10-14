@@ -131,7 +131,7 @@ cp referencias/perfil.template.toml /path/to/your/app/.claude/auditoria/perfil.t
 python scanner.py --perfil /path/to/your/app/.claude/auditoria/perfil.toml --print
 ```
 
-Then copy `SKILL.md` (plus `prompts/` and `referencias/`) into `.claude/skills/auditor/` and invoke `/auditor` inside Claude Code. The skill runs a 6-phase loop with a human gate between phases.
+Then copy `SKILL.md` (plus `prompts/` and `referencias/`) into `.claude/skills/auditor/` and invoke `/auditor` inside Claude Code. The skill runs a 7-phase loop (phases 0 to 6) with a human gate between phases.
 
 > **The profile is the cheapest and most dangerous failure point.** A wrong role or a missing folder makes the whole audit report confidently about the wrong place.
 

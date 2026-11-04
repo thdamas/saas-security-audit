@@ -2201,6 +2201,24 @@ def _dentro_de(filho: Path, pai: Path) -> bool:
         return False
 
 
+
+def guardar_rodada_anterior(pasta: Path, agora: datetime) -> list:
+    """Rodar o scanner de novo na mesma pasta do dia nao pode apagar a rodada anterior.
+    Copia run/inventario/mecanicos para anteriores/<hora>/ e herda as fases ja aprovadas."""
+    import shutil
+    atual = pasta / "run.json"
+    if not atual.exists():
+        return []
+    destino = pasta / "anteriores" / f"{agora:%H%M%S}"
+    destino.mkdir(parents=True, exist_ok=True)
+    for nome in ("run.json", "inventario.json", "mecanicos.json"):
+        if (pasta / nome).exists():
+            shutil.copy2(pasta / nome, destino / nome)
+    try:
+        return json.loads(atual.read_text(encoding="utf-8")).get("fases_aprovadas", [])
+    except (ValueError, OSError):
+        return []
+
 def escanear(perfil_path: Path, modo: str, dimensao: str | None,
              har: Path | None, saida_base: Path) -> dict:
     perfil = carregar_perfil(perfil_path)
@@ -2237,6 +2255,7 @@ def escanear(perfil_path: Path, modo: str, dimensao: str | None,
     pasta = saida_base / nome_app / f"{agora:%Y-%m-%d}-{modo}"
     for sub in ("lotes", "ceticos", "ground-truth", "har"):
         (pasta / sub).mkdir(parents=True, exist_ok=True)
+    fases_anteriores = guardar_rodada_anterior(pasta, agora)
 
     run = {
         "app": nome_app,
@@ -2249,7 +2268,7 @@ def escanear(perfil_path: Path, modo: str, dimensao: str | None,
         "raiz_auditada": str(perfil["_raiz"]),
         "detectores_ok": {"banco": ok_b, "codigo": ok_c, "mecanicos": ok_m},
         "har_usado": har.name if har else None,
-        "fases_aprovadas": [],
+        "fases_aprovadas": fases_anteriores,
         **manifesto,
     }
 

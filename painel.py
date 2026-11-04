@@ -1124,6 +1124,9 @@ function atualizarGate() {{
       }}) ? D.corSev.critico : D.corSev.alto);
   var txt = bloq === 0 ? 'Pronto pra escalar'
     : (cor === D.corSev.critico ? 'Não escalar' : 'Com ressalvas');
+  var lv = bloq > 0 && D.leitura && D.leitura.veredito;
+  if (lv === 'nao_escalar') {{ txt = 'Não escalar'; cor = D.corSev.critico; }}
+  else if (lv === 'com_ressalvas') {{ txt = 'Com ressalvas'; cor = D.corSev.alto; }}
   var g = document.querySelector('.gate-tx strong');
   if (g) {{ g.textContent = txt; g.style.color = cor; }}
   var chip = document.querySelector('.gate-tx .chip');

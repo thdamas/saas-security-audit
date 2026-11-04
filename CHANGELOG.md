@@ -10,6 +10,13 @@ Not every commit is a release. A release is cut when a change is worth pulling.
 
 ---
 
+## [Unreleased] - 1.0.1 candidate
+
+### Fixed
+
+- **Dashboard verdict.** The gate in the browser recomputed the verdict from severities alone and overwrote the reviewer's reading (`leitura.json`). With highs and no criticals it showed "Com ressalvas" while the reading said "Não escalar". The reading now wins whenever there are open blockers.
+- **Re-running the scanner on the same day.** The run folder is named by date and mode, so a second run overwrote `run.json`, `inventario.json` and `mecanicos.json` and reset the approved phases. The previous files are now kept in `anteriores/<HHMMSS>/` and the approved phases carry over.
+
 ## [1.0.0] - 2026-09-24
 
 The first versioned release. It bundles two calibration rounds on real, open-source Supabase apps.
